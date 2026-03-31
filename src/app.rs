@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use rand::Rng;
+
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -18,16 +20,17 @@ use crate::overlay::HudOverlay;
 use crate::postprocess::PostProcessChain;
 use crate::text::NameOverlay;
 
-pub fn run(config: Config) {
+pub fn run(config: Config, config_path: String) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App { config, state: None };
+    let mut app = App { config, config_path, state: None };
     event_loop.run_app(&mut app).expect("Event loop failed");
 }
 
 struct App {
     config: Config,
+    config_path: String,
     state: Option<AppState>,
 }
 
@@ -60,6 +63,7 @@ struct AppState {
     last_beat_t: f64,
     pulse: f32,
     rotation_angle: f32,
+    vibration_y: f32,
     strobe_alpha: f32,
     sensitivity: f32,
 
@@ -171,6 +175,7 @@ impl ApplicationHandler for App {
             last_beat_t: 0.0,
             pulse: 0.0,
             rotation_angle: 0.0,
+            vibration_y: 0.0,
             strobe_alpha: 0.0,
             sensitivity: self.config.beat_sensitivity,
             frame_count: 0,
@@ -215,8 +220,14 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::Resized(size) => {
+                let new_size = (size.width.max(1), size.height.max(1));
                 let s = &mut self.state.as_mut().unwrap();
-                s.gpu.resize((size.width.max(1), size.height.max(1)));
+                s.gpu.resize(new_size);
+                // Recreate render textures at the new resolution
+                let (effect_tex, effect_view) = s.gpu.create_linear_texture("effect_output");
+                s.effect_tex  = effect_tex;
+                s.effect_view = effect_view;
+                s.post_chain  = PostProcessChain::new(&s.gpu, &s.effects.global_uniform_buffer);
             }
             WindowEvent::RedrawRequested => {
                 self.render_frame();
@@ -234,7 +245,7 @@ impl ApplicationHandler for App {
 
 impl App {
     fn config_path(&self) -> String {
-        "config.json".to_string()
+        self.config_path.clone()
     }
 
     fn render_frame(&mut self) {
@@ -306,15 +317,32 @@ impl App {
             state.strobe_alpha = (state.strobe_alpha - 3.0 * dt).max(0.0);
         }
 
-        // Rotation spring (slowly oscillates, beat kick)
+        // Rotation spring (beat kick, decays back to 0)
         let rot_target = if beat_state.beat { state.config.global_rotation * 0.02 } else { 0.0 };
         state.rotation_angle = state.rotation_angle * 0.95 + rot_target * 0.05;
 
-        // Update scene
-        state.scene.update(&beat_state);
+        // Vibration spring (beat kick, fast decay)
+        if beat_state.beat {
+            state.vibration_y = state.config.global_vibration * 0.025;
+        } else {
+            state.vibration_y *= 0.80;
+        }
+
+        // Update scene; randomize effect params on switch
+        let scene_switched = state.scene.update(&beat_state);
 
         // Current scene state
         let effect_name = state.scene.current_effect().to_string();
+
+        if scene_switched {
+            let mut rng = rand::thread_rng();
+            let params = crate::gpu::EffectUniforms {
+                params: std::array::from_fn(|_| rng.gen::<f32>()),
+                seed: rng.gen::<f32>(),
+                _pad: [0.0; 3],
+            };
+            state.effects.update_effect_params(&state.gpu.queue, &effect_name, &params);
+        }
         let pal_idx = state.scene.current_palette_index();
         let pal = palette(pal_idx);
         let mirror = state.scene.current_mirror();
@@ -352,7 +380,7 @@ impl App {
             vga_noise: state.config.vga_noise,
             vga_sync: state.config.vga_sync,
             rotation_angle: state.rotation_angle,
-            vibration_y: 0.0,
+            vibration_y: state.vibration_y,
             strobe_alpha: state.strobe_alpha,
             strobe_r: strobe_col[0],
             strobe_g: strobe_col[1],

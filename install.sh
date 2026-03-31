@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-liner installer for vgalizer.
-# Usage: curl -sSf https://raw.githubusercontent.com/user/vgalizer-rs/master/install.sh | sh
+# Usage: curl -sSf https://raw.githubusercontent.com/Hornfisk/vgalizer-rs/master/install.sh | sh
 
 set -e
 
@@ -25,6 +25,32 @@ fi
 echo "Building vgalizer (this takes a minute on first run)..."
 cargo install --git https://github.com/Hornfisk/vgalizer-rs vgalizer
 
+# ---- Add shell aliases (idempotent) ----
+add_aliases() {
+    local rc="$1"
+    if [[ -f "$rc" ]] && grep -q 'vgalizer-rs aliases' "$rc" 2>/dev/null; then
+        return  # already present
+    fi
+    if [[ -f "$rc" ]]; then
+        cat >> "$rc" <<'EOF'
+
+# >>> vgalizer-rs aliases >>>
+alias vgr='vgalizer'
+alias vgrname='vgalizer --name'
+alias vgrw='vgalizer --windowed'
+# <<< vgalizer-rs aliases <<<
+EOF
+        echo "Added aliases to $rc"
+    fi
+}
+
+add_aliases "$HOME/.bashrc"
+add_aliases "$HOME/.zshrc"
+
 echo ""
-echo "Done!  Run:  vgalizer --name \"YOUR DJ NAME\""
-echo "       Or:   vgalizer --list-audio    # see available audio devices"
+echo "Done!  Reload your shell:  source ~/.zshrc  (or ~/.bashrc)"
+echo ""
+echo "  vgr                       → fullscreen with name from config"
+echo "  vgrname \"YOUR DJ NAME\"    → fullscreen with custom name"
+echo "  vgrw                      → windowed (for testing)"
+echo "  vgalizer --list-audio     → see available audio devices"

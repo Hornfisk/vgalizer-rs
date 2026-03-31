@@ -16,6 +16,7 @@ fn main() {
         return;
     }
 
-    let config = config::load(&cli.config, &cli);
-    app::run(config);
+    let config_path = cli.config.clone();
+    let config = config::load(&config_path, &cli);
+    app::run(config, config_path);
 }

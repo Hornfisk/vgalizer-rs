@@ -23,7 +23,7 @@ fi
 
 # ---- Build & install ----
 echo "Building vgalizer (this takes a minute on first run)..."
-cargo install --git https://github.com/user/vgalizer-rs vgalizer
+cargo install --git https://github.com/Hornfisk/vgalizer-rs vgalizer
 
 echo ""
 echo "Done!  Run:  vgalizer --name \"YOUR DJ NAME\""

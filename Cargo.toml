@@ -1,0 +1,52 @@
+[package]
+name = "vgalizer"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight GPU-accelerated audio-reactive DJ visualizer"
+license = "MIT"
+repository = "https://github.com/user/vgalizer-rs"
+keywords = ["visualizer", "audio", "dj", "vj", "wgpu"]
+categories = ["multimedia::video", "multimedia::audio"]
+
+[dependencies]
+# GPU + Windowing
+wgpu = "24"
+winit = "0.30"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+
+# Audio
+cpal = "0.15"
+
+# FFT
+rustfft = "6"
+
+# Text rendering
+glyphon = "0.8"
+
+# Config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utilities
+env_logger = "0.11"
+log = "0.4"
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+[package.metadata.deb]
+depends = "libasound2, libvulkan1"
+section = "multimedia"
+assets = [
+    ["target/release/vgalizer", "usr/bin/", "755"],
+    ["config.json", "etc/vgalizer/config.json", "644"],
+    ["assets/fonts/RobotoCondensed-Bold.ttf", "usr/share/vgalizer/fonts/", "644"],
+]

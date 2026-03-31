@@ -35,9 +35,8 @@ add_aliases() {
         cat >> "$rc" <<'EOF'
 
 # >>> vgalizer-rs aliases >>>
-alias vgr='vgalizer'
-alias vgrname='vgalizer --name'
-alias vgrw='vgalizer --windowed'
+vgr()  { vgalizer ${1:+--name "$1"} "${@:2}"; }
+vgrw() { vgalizer --windowed ${1:+--name "$1"} "${@:2}"; }
 # <<< vgalizer-rs aliases <<<
 EOF
         echo "Added aliases to $rc"

@@ -78,7 +78,7 @@ impl NameOverlay {
         }
     }
 
-    pub fn update(&mut self, beat: bool, pulse: f32) {
+    pub fn update(&mut self, beat: bool, _pulse: f32) {
         if beat {
             self.jitter_x = self.rng.gen_range(-12.0..12.0);
             self.jitter_y = self.rng.gen_range(-5.0..5.0);

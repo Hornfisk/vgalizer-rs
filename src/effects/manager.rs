@@ -2,9 +2,7 @@ use rand::Rng;
 use std::time::Instant;
 
 use crate::audio::BeatState;
-use crate::colors::{palette, palette_count};
-
-use super::EFFECT_NAMES;
+use crate::colors::palette_count;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MirrorMode {

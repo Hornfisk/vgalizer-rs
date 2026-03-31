@@ -4,7 +4,6 @@ use rustfft::{num_complex::Complex, FftPlanner};
 
 use super::state::N_BANDS;
 
-const BLOCK_SIZE: usize = 512;
 const N_FFT: usize = 256;
 const PEAK_FLOOR: f32 = 0.001;
 const PEAK_DECAY: f32 = 0.9997;
@@ -15,13 +14,12 @@ pub struct AudioAnalyzer {
     band_peaks: [f32; N_BANDS],
     smoothed_level: f32,
     smoothed_bands: [f32; N_BANDS],
-    sample_rate: u32,
     n_out: usize,
     max_bin: usize,
 }
 
 impl AudioAnalyzer {
-    pub fn new(sample_rate: u32) -> Self {
+    pub fn new(_sample_rate: u32) -> Self {
         let n_out = N_FFT / 2 + 1; // rfft output bins
         let max_bin = (n_out as f32 * 14000.0 / 22050.0) as usize;
         let max_bin = max_bin.max(2).min(n_out);
@@ -31,7 +29,6 @@ impl AudioAnalyzer {
             band_peaks: [PEAK_FLOOR; N_BANDS],
             smoothed_level: 0.0,
             smoothed_bands: [0.0; N_BANDS],
-            sample_rate,
             n_out,
             max_bin,
         }

@@ -3,7 +3,7 @@ use cpal::{Device, Stream, StreamConfig};
 use std::sync::Arc;
 
 use super::analysis::AudioAnalyzer;
-use super::state::{AtomicAudioState, N_BANDS};
+use super::state::AtomicAudioState;
 
 pub fn list_input_devices() -> Vec<(usize, String)> {
     let host = cpal::default_host();

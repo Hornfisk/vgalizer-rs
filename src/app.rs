@@ -11,7 +11,7 @@ use crate::audio::{AtomicAudioState, BeatTracker};
 use crate::colors::palette;
 use crate::config::Config;
 use crate::effects::{manager::SceneManager, EffectRegistry};
-use crate::gpu::{EffectUniforms, GlobalUniforms, PostUniforms};
+use crate::gpu::{GlobalUniforms, PostUniforms};
 use crate::gpu::uniforms::pack_bands;
 use crate::input::{Action, InputHandler};
 use crate::overlay::HudOverlay;
@@ -31,6 +31,7 @@ struct App {
     state: Option<AppState>,
 }
 
+#[allow(dead_code)]
 struct AppState {
     window: Arc<Window>,
     gpu: crate::gpu::GpuContext,

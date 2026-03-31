@@ -1,5 +1,3 @@
-use wgpu::util::DeviceExt;
-
 use crate::gpu::{pipeline, GpuContext, PostUniforms};
 
 const VERT_SRC: &str = include_str!("../../shaders/fullscreen.wgsl");
@@ -12,6 +10,7 @@ const SCANLINES_SRC: &str = include_str!("../../shaders/post/scanlines.wgsl");
 const STROBE_SRC: &str = include_str!("../../shaders/post/strobe.wgsl");
 
 /// Manages the full post-processing chain using ping-pong textures.
+#[allow(dead_code)]
 pub struct PostProcessChain {
     // Ping-pong textures
     tex_a: wgpu::Texture,
@@ -52,7 +51,7 @@ pub struct PostProcessChain {
 }
 
 impl PostProcessChain {
-    pub fn new(gpu: &GpuContext, global_buf: &wgpu::Buffer) -> Self {
+    pub fn new(gpu: &GpuContext, _global_buf: &wgpu::Buffer) -> Self {
         let device = &gpu.device;
         let format = wgpu::TextureFormat::Rgba16Float;
 
@@ -161,7 +160,7 @@ impl PostProcessChain {
         encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
         effect_view: &wgpu::TextureView,
-        post: &PostUniforms,
+        _post: &PostUniforms,
     ) -> &'a wgpu::TextureView {
         // Pass 1: Trail blend. Read trail_tex (prev frame) + effect → write tex_a.
         // tex_a becomes the new trail; we copy it to trail_tex after the frame.
@@ -181,12 +180,12 @@ impl PostProcessChain {
 
         // Copy tex_a → trail_tex so next frame has the current trail as its "previous"
         encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.tex_a,
                 mip_level: 0, origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.trail_tex,
                 mip_level: 0, origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,

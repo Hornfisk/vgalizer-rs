@@ -1,8 +1,6 @@
 pub mod manager;
 
 use std::collections::HashMap;
-use wgpu::util::DeviceExt;
-
 use crate::gpu::{pipeline, EffectUniforms, GlobalUniforms};
 
 /// All effects available in v1.
@@ -43,6 +41,7 @@ fn effect_source(name: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 pub struct EffectRegistry {
     pub global_bind_group_layout: wgpu::BindGroupLayout,
     pub effect_bind_group_layout: wgpu::BindGroupLayout,
@@ -57,7 +56,7 @@ pub struct EffectRegistry {
 impl EffectRegistry {
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
         target_format: wgpu::TextureFormat,
         enabled: Option<&[String]>,
     ) -> Self {

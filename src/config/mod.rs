@@ -4,7 +4,7 @@ pub mod watcher;
 pub use schema::Config;
 pub use watcher::ConfigWatcher;
 
-use crate::Cli;
+use crate::cli::Cli;
 
 pub fn load(path: &str, cli: &Cli) -> Config {
     let mut config = load_file(path);

@@ -1,0 +1,11 @@
+pub mod app;
+pub mod audio;
+pub mod cli;
+pub mod colors;
+pub mod config;
+pub mod effects;
+pub mod gpu;
+pub mod input;
+pub mod overlay;
+pub mod postprocess;
+pub mod text;

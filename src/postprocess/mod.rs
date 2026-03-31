@@ -5,6 +5,7 @@ use crate::gpu::{pipeline, GpuContext, PostUniforms};
 const VERT_SRC: &str = include_str!("../../shaders/fullscreen.wgsl");
 const TRAIL_SRC: &str = include_str!("../../shaders/post/trail.wgsl");
 const MIRROR_SRC: &str = include_str!("../../shaders/post/mirror.wgsl");
+const ROTATION_SRC: &str = include_str!("../../shaders/post/rotation.wgsl");
 const GLITCH_SRC: &str = include_str!("../../shaders/post/glitch.wgsl");
 const VGA_SRC: &str = include_str!("../../shaders/post/vga.wgsl");
 const SCANLINES_SRC: &str = include_str!("../../shaders/post/scanlines.wgsl");
@@ -34,6 +35,7 @@ pub struct PostProcessChain {
     // Pipelines
     trail_pipeline: wgpu::RenderPipeline,
     mirror_pipeline: wgpu::RenderPipeline,
+    rotation_pipeline: wgpu::RenderPipeline,
     glitch_pipeline: wgpu::RenderPipeline,
     vga_pipeline: wgpu::RenderPipeline,
     scanlines_pipeline: wgpu::RenderPipeline,
@@ -42,6 +44,7 @@ pub struct PostProcessChain {
     // Bind group layouts
     trail_bgl: wgpu::BindGroupLayout,
     mirror_bgl: wgpu::BindGroupLayout,
+    rotation_bgl: wgpu::BindGroupLayout,
     glitch_bgl: wgpu::BindGroupLayout,
     vga_bgl: wgpu::BindGroupLayout,
     scanlines_bgl: wgpu::BindGroupLayout,
@@ -83,6 +86,14 @@ impl PostProcessChain {
         });
         let mirror_pipeline = make_pipeline(device, "mirror", &vert,
             MIRROR_SRC, &[&mirror_bgl], format);
+
+        // --- Rotation + vibration ---
+        let rotation_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("rotation_bgl"),
+            entries: &[tex_binding(0), sampler_binding(1), uniform_binding(2)],
+        });
+        let rotation_pipeline = make_pipeline(device, "rotation", &vert,
+            ROTATION_SRC, &[&rotation_bgl], format);
 
         // --- Glitch (needs globals for time) ---
         let glitch_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -126,9 +137,9 @@ impl PostProcessChain {
             tex_a, view_a, tex_b, view_b,
             trail_tex, trail_view,
             sampler, post_buf, global_buf_ref,
-            trail_pipeline, mirror_pipeline, glitch_pipeline,
+            trail_pipeline, mirror_pipeline, rotation_pipeline, glitch_pipeline,
             vga_pipeline, scanlines_pipeline, strobe_pipeline,
-            trail_bgl, mirror_bgl, glitch_bgl, vga_bgl, scanlines_bgl, strobe_bgl,
+            trail_bgl, mirror_bgl, rotation_bgl, glitch_bgl, vga_bgl, scanlines_bgl, strobe_bgl,
         }
     }
 
@@ -152,7 +163,8 @@ impl PostProcessChain {
         effect_view: &wgpu::TextureView,
         post: &PostUniforms,
     ) -> &'a wgpu::TextureView {
-        // Pass 1: Trail blend (effect → trail_buf)
+        // Pass 1: Trail blend. Read trail_tex (prev frame) + effect → write tex_a.
+        // tex_a becomes the new trail; we copy it to trail_tex after the frame.
         {
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("trail_bg"),
@@ -164,24 +176,53 @@ impl PostProcessChain {
                     wgpu::BindGroupEntry { binding: 3, resource: self.post_buf.as_entire_binding() },
                 ],
             });
-            render_pass(encoder, "trail_pass", &self.trail_view, &self.trail_pipeline, &bg);
+            render_pass(encoder, "trail_pass", &self.view_a, &self.trail_pipeline, &bg);
         }
 
-        // Pass 2: Mirror (trail_buf → tex_a)
+        // Copy tex_a → trail_tex so next frame has the current trail as its "previous"
+        encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.tex_a,
+                mip_level: 0, origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+                texture: &self.trail_tex,
+                mip_level: 0, origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: self.tex_a.size().width, height: self.tex_a.size().height, depth_or_array_layers: 1 },
+        );
+
+        // Pass 2: Mirror (tex_a → tex_b)
         {
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("mirror_bg"),
                 layout: &self.mirror_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.trail_view) },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.view_a) },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                     wgpu::BindGroupEntry { binding: 2, resource: self.post_buf.as_entire_binding() },
                 ],
             });
-            render_pass(encoder, "mirror_pass", &self.view_a, &self.mirror_pipeline, &bg);
+            render_pass(encoder, "mirror_pass", &self.view_b, &self.mirror_pipeline, &bg);
         }
 
-        // Pass 3: Strobe (tex_a → tex_b) — always run (strobe_alpha=0 is passthrough)
+        // Pass 3: Rotation + vibration (tex_b → tex_a)
+        {
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("rotation_bg"),
+                layout: &self.rotation_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.view_b) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 2, resource: self.post_buf.as_entire_binding() },
+                ],
+            });
+            render_pass(encoder, "rotation_pass", &self.view_a, &self.rotation_pipeline, &bg);
+        }
+
+        // Pass 4: Strobe (tex_a → tex_b) — passthrough when strobe_alpha=0
         {
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("strobe_bg"),
@@ -195,8 +236,8 @@ impl PostProcessChain {
             render_pass(encoder, "strobe_pass", &self.view_b, &self.strobe_pipeline, &bg);
         }
 
-        // Pass 4: Glitch (tex_b → tex_a)
-        if post.glitch_intensity > 0.0 {
+        // Pass 5: Glitch (tex_b → tex_a)
+        {
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("glitch_bg"),
                 layout: &self.glitch_bgl,
@@ -208,26 +249,9 @@ impl PostProcessChain {
                 ],
             });
             render_pass(encoder, "glitch_pass", &self.view_a, &self.glitch_pipeline, &bg);
-        } else {
-            // Copy tex_b → tex_a (blit)
-            encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
-                    texture: &self.tex_b,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::ImageCopyTexture {
-                    texture: &self.tex_a,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::Extent3d { width: self.tex_a.size().width, height: self.tex_a.size().height, depth_or_array_layers: 1 },
-            );
         }
 
-        // Pass 5: VGA (tex_a → tex_b)
+        // Pass 6: VGA (tex_a → tex_b)
         {
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("vga_bg"),
@@ -242,7 +266,7 @@ impl PostProcessChain {
             render_pass(encoder, "vga_pass", &self.view_b, &self.vga_pipeline, &bg);
         }
 
-        // Pass 6: Scanlines (tex_b → tex_a)
+        // Pass 7: Scanlines (tex_b → tex_a)
         {
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("scanlines_bg"),
@@ -257,7 +281,7 @@ impl PostProcessChain {
             render_pass(encoder, "scanlines_pass", &self.view_a, &self.scanlines_pipeline, &bg);
         }
 
-        &self.view_a
+        &self.view_a  // final output (scanlines wrote to tex_a)
     }
 }
 

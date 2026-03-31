@@ -49,7 +49,7 @@ struct AppState {
     scene: SceneManager,
     beat_tracker: BeatTracker,
     audio_state: Arc<AtomicAudioState>,
-    _audio_stream: cpal::Stream,
+    _audio_stream: Option<cpal::Stream>,
     config_watcher: Option<crate::config::ConfigWatcher>,
     config: Config,
 
@@ -61,6 +61,11 @@ struct AppState {
     rotation_angle: f32,
     strobe_alpha: f32,
     sensitivity: f32,
+
+    // Perf stats (logged every 300 frames at RUST_LOG=info)
+    frame_count: u32,
+    perf_window_start: Instant,
+    frame_times_ms: Vec<f32>,
 }
 
 impl ApplicationHandler for App {
@@ -113,18 +118,16 @@ impl ApplicationHandler for App {
         let effect_names = effects.effect_names().iter().map(|s| s.to_string()).collect();
         let scene = SceneManager::new(effect_names, &config.mirror_pool, config.scene_duration);
 
-        // Audio
+        // Audio (optional — runs silently if no device is available)
         let audio_state = Arc::new(AtomicAudioState::new());
         let stream = match crate::audio::capture::start_capture(
             config.audio_device.as_deref(),
             audio_state.clone(),
         ) {
-            Ok(s) => s,
+            Ok(s) => Some(s),
             Err(e) => {
-                log::error!("Audio error: {}. Running silently.", e);
-                // Create a silent fallback — we can't easily create an empty stream,
-                // so we just proceed; audio_state will stay at zero
-                return;
+                log::warn!("Audio unavailable: {}. Running silently.", e);
+                None
             }
         };
 
@@ -159,7 +162,7 @@ impl ApplicationHandler for App {
             scene,
             beat_tracker,
             audio_state,
-            _audio_stream: stream,
+            _audio_stream: stream, // kept alive to prevent drop/stop
             config_watcher,
             config: self.config.clone(),
             start: Instant::now(),
@@ -169,6 +172,9 @@ impl ApplicationHandler for App {
             rotation_angle: 0.0,
             strobe_alpha: 0.0,
             sensitivity: self.config.beat_sensitivity,
+            frame_count: 0,
+            perf_window_start: Instant::now(),
+            frame_times_ms: Vec::with_capacity(300),
         });
     }
 
@@ -253,6 +259,23 @@ impl App {
         let now = Instant::now();
         let t = state.start.elapsed().as_secs_f64();
         let dt = state.last_frame.elapsed().as_secs_f64().min(0.05) as f32;
+        state.frame_times_ms.push(dt * 1000.0);
+        state.frame_count += 1;
+        if state.frame_count >= 300 {
+            let elapsed = state.perf_window_start.elapsed().as_secs_f32();
+            let fps = state.frame_count as f32 / elapsed;
+            let mut sorted = state.frame_times_ms.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p50 = sorted[sorted.len() / 2];
+            let p99 = sorted[(sorted.len() * 99) / 100];
+            log::info!(
+                "perf: {:.1} fps  p50={:.2}ms  p99={:.2}ms",
+                fps, p50, p99
+            );
+            state.frame_count = 0;
+            state.perf_window_start = now;
+            state.frame_times_ms.clear();
+        }
         state.last_frame = now;
 
         // Read audio

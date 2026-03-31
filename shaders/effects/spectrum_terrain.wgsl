@@ -1,12 +1,9 @@
 // SpectrumTerrain: dual mountain silhouette from spectrum, mirrored top/bottom.
 
-struct EffectParams { params: array<f32, 16>, seed: f32, _pad: vec3<f32> };
-@group(1) @binding(0) var<uniform> fx: EffectParams;
-
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let height_scale = 0.45 + fx.params[0] * 0.2;
-    let glow = 0.4 + fx.params[1] * 0.3;
+    let height_scale = 0.45 + param(0u) * 0.2;
+    let glow = 0.4 + param(1u) * 0.3;
     let pulse = smooth_pulse();
 
     // Sample the spectrum at this x position (interpolated across 32 bands)

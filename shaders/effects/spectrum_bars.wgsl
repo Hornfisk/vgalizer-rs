@@ -1,13 +1,10 @@
 // SpectrumBars: classic vertical frequency bars with falling peak markers.
 
-struct EffectParams { params: array<f32, 16>, seed: f32, _pad: vec3<f32> };
-@group(1) @binding(0) var<uniform> fx: EffectParams;
-
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let n_bars = 32u;
-    let height_scale = 0.55 + fx.params[1] * 0.3;
-    let glow = 0.3 + fx.params[2] * 0.4;
+    let height_scale = 0.55 + param(1u) * 0.3;
+    let glow = 0.3 + param(2u) * 0.4;
     let pulse = smooth_pulse();
 
     // Which bar are we in?

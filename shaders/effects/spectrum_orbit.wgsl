@@ -1,8 +1,5 @@
 // SpectrumOrbit: radial frequency bars in a ring (radar-style).
 
-struct EffectParams { params: array<f32, 16>, seed: f32, _pad: vec3<f32> };
-@group(1) @binding(0) var<uniform> fx: EffectParams;
-
 const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
 
@@ -10,9 +7,9 @@ const TAU: f32 = 6.28318530718;
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let t = globals.time * globals.fx_speed;
     let n_bars    = 32u;
-    let inner_r   = 0.18 + fx.params[0] * 0.05;
-    let bar_len   = 0.22 + fx.params[1] * 0.1;
-    let rot_speed = fx.params[2] * 0.3;
+    let inner_r   = 0.18 + param(0u) * 0.05;
+    let bar_len   = 0.22 + param(1u) * 0.1;
+    let rot_speed = param(2u) * 0.3;
     let pulse     = smooth_pulse();
 
     let asp = globals.resolution.x / globals.resolution.y;

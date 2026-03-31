@@ -1,27 +1,22 @@
 // Kaleido: radial spokes + concentric rings.
 
-struct EffectParams { params: array<f32, 16>, seed: f32, _pad: vec3<f32> };
-@group(1) @binding(0) var<uniform> fx: EffectParams;
-
 const PI: f32 = 3.14159265359;
 const TAU: f32 = 6.28318530718;
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let t = globals.time * globals.fx_speed;
-    let n_spokes = max(3.0, fx.params[0] + 3.0);
-    let n_rings  = max(3.0, fx.params[1] + 3.0);
-    let rot_speed = 0.3 + fx.params[2] * 0.5;
+    let n_spokes = max(3.0, param(0u) + 3.0);
+    let n_rings  = max(3.0, param(1u) + 3.0);
+    let rot_speed = 0.3 + param(2u) * 0.5;
     let pulse = smooth_pulse();
 
     let asp = globals.resolution.x / globals.resolution.y;
-    var p = (uv - 0.5) * vec2<f32>(asp, 1.0);
+    let p = (uv - 0.5) * vec2<f32>(asp, 1.0);
     let r = length(p);
     let max_r = 0.55;
 
-    // Dual rotation (inner/outer)
-    var angle = atan2(p.y, p.x) + t * rot_speed;
-    let angle2 = atan2(p.y, p.x) - t * rot_speed * 0.6;
+    let angle = atan2(p.y, p.x) + t * rot_speed;
 
     // Spokes: distance from nearest spoke angle
     let spoke_gap = TAU / n_spokes;
@@ -41,7 +36,6 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let audio_glow = band_val * 0.3 * smoothstep(max_r, 0.0, r);
 
     var color = vec3<f32>(0.0);
-    // Alternate spoke/ring colors
     let spoke_col = mix(globals.palette_sa.rgb, globals.palette_ra.rgb, fract(angle / spoke_gap));
     let ring_col  = mix(globals.palette_sb.rgb, globals.palette_rb.rgb, fract(r / ring_gap));
 

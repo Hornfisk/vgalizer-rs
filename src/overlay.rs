@@ -30,7 +30,8 @@ impl HudOverlay {
 
         let font_size = 18.0;
         let mut buffer = Buffer::new(&mut font_system, Metrics::new(font_size, font_size * 1.4));
-        buffer.set_size(&mut font_system, Some(400.0), Some(200.0));
+        // Wide enough that the shortcuts line never wraps; bounds.right clips at render time.
+        buffer.set_size(&mut font_system, Some(3000.0), Some(200.0));
 
         Self {
             font_system,
@@ -51,10 +52,11 @@ impl HudOverlay {
         self.visible
     }
 
-    pub fn update_text(&mut self, effect: &str, bpm: f32, sensitivity: f32) {
+    pub fn update_text(&mut self, effect: &str, bpm: f32, sensitivity: f32, level: f32) {
+        let bar = level_bar(level);
         let text = format!(
-            "Effect: {}\nBPM: {:.0}  Sens: {:.1}\nSPACE next  1-9 jump  +/- sens  P mirror  H hide  Q quit",
-            effect, bpm, sensitivity
+            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Lvl: {}\nSPACE next  1-9 jump  +/- sens  P mirror  A device  H hide  Q quit",
+            effect, bpm, sensitivity, bar
         );
         self.buffer.set_text(
             &mut self.font_system,
@@ -80,15 +82,16 @@ impl HudOverlay {
             height: screen_size.1,
         });
 
+        let margin = 20i32;
         let areas = [TextArea {
             buffer: &self.buffer,
-            left: 12.0,
+            left: margin as f32,
             top: 12.0,
             scale: 1.0,
             bounds: TextBounds {
                 left: 0,
                 top: 0,
-                right: 600,
+                right: screen_size.0 as i32 - margin,
                 bottom: 150,
             },
             default_color: Color::rgba(200, 200, 200, 200),
@@ -121,4 +124,10 @@ impl HudOverlay {
 
         self.atlas.trim();
     }
+}
+
+/// 8-char ASCII level bar, e.g. "████░░░░"
+fn level_bar(level: f32) -> String {
+    let filled = (level.clamp(0.0, 1.0) * 8.0).round() as usize;
+    "█".repeat(filled) + &"░".repeat(8 - filled)
 }

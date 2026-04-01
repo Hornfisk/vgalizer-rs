@@ -1,4 +1,5 @@
 pub mod app;
+pub mod audio_picker;
 pub mod audio;
 pub mod cli;
 pub mod colors;

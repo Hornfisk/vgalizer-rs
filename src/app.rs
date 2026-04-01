@@ -10,6 +10,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::audio::{AtomicAudioState, BeatTracker};
+use crate::audio_picker::{AudioPicker, AudioPickerOverlay};
 use crate::colors::palette;
 use crate::config::Config;
 use crate::effects::{manager::SceneManager, EffectRegistry};
@@ -49,11 +50,13 @@ struct AppState {
 
     name_overlay: NameOverlay,
     hud: HudOverlay,
+    audio_picker: Option<AudioPicker>,
+    audio_picker_overlay: AudioPickerOverlay,
     input: InputHandler,
     scene: SceneManager,
     beat_tracker: BeatTracker,
     audio_state: Arc<AtomicAudioState>,
-    _audio_stream: Option<cpal::Stream>,
+    _audio_stream: Option<crate::audio::capture::AudioStreamHandle>,
     config_watcher: Option<crate::config::ConfigWatcher>,
     config: Config,
 
@@ -148,6 +151,7 @@ impl ApplicationHandler for App {
         );
 
         let hud = HudOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
+        let audio_picker_overlay = AudioPickerOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
 
         let beat_tracker = BeatTracker::new(config.beat_sensitivity);
 
@@ -163,6 +167,8 @@ impl ApplicationHandler for App {
             blit_bgl,
             name_overlay,
             hud,
+            audio_picker: None,
+            audio_picker_overlay,
             input: InputHandler::new(),
             scene,
             beat_tracker,
@@ -215,6 +221,67 @@ impl ApplicationHandler for App {
                         }
                         Action::ToggleWindowed => {
                             state.window.set_fullscreen(None);
+                        }
+                        Action::ToggleAudioPicker => {
+                            if state.audio_picker.is_some() {
+                                state.audio_picker = None;
+                                state.input.picker_open = false;
+                            } else {
+                                let active = state.config.audio_device.as_deref();
+                                state.audio_picker = Some(AudioPicker::open(active));
+                                state.input.picker_open = true;
+                            }
+                        }
+                        Action::PickerUp => {
+                            if let Some(p) = &mut state.audio_picker {
+                                p.state.move_up();
+                            }
+                        }
+                        Action::PickerDown => {
+                            if let Some(p) = &mut state.audio_picker {
+                                p.state.move_down();
+                            }
+                        }
+                        Action::PickerJump(n) => {
+                            if let Some(p) = &mut state.audio_picker {
+                                p.state.jump_to_1indexed(n);
+                            }
+                        }
+                        Action::PickerCancel => {
+                            state.audio_picker = None;
+                            state.input.picker_open = false;
+                        }
+                        Action::PickerConfirm => {
+                            // Extract name before dropping picker (releases borrow)
+                            let name = state
+                                .audio_picker
+                                .as_ref()
+                                .and_then(|p| p.state.selected_name().map(|s| s.to_string()));
+
+                            // Close picker and scanner
+                            state.audio_picker = None;
+                            state.input.picker_open = false;
+
+                            if let Some(name) = name {
+                                // Drop old stream before opening new one
+                                state._audio_stream = None;
+                                match crate::audio::capture::start_capture(
+                                    Some(&name),
+                                    state.audio_state.clone(),
+                                ) {
+                                    Ok(s) => {
+                                        log::info!("Switched audio device to '{}'", name);
+                                        state._audio_stream = Some(s);
+                                        state.config.audio_device = Some(name.clone());
+                                        if let Err(e) = crate::config::write_audio_device(&name) {
+                                            log::warn!("Could not save audio_device to config: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Could not open device '{}': {}", name, e);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -400,7 +467,7 @@ impl App {
         state.name_overlay.update(beat_state.beat, state.pulse);
 
         // HUD text
-        state.hud.update_text(&effect_name, beat_state.bpm, state.sensitivity);
+        state.hud.update_text(&effect_name, beat_state.bpm, state.sensitivity, level);
 
         // Acquire swapchain frame
         let output = match state.gpu.surface.get_current_texture() {
@@ -494,6 +561,19 @@ impl App {
             &output_view,
             state.gpu.size,
         );
+
+        // --- Audio picker overlay (only when open) ---
+        if let Some(picker) = &mut state.audio_picker {
+            picker.tick();
+            state.audio_picker_overlay.update(picker);
+            state.audio_picker_overlay.render(
+                &state.gpu.device,
+                &state.gpu.queue,
+                &mut encoder,
+                &output_view,
+                state.gpu.size,
+            );
+        }
 
         state.gpu.queue.submit([encoder.finish()]);
         output.present();

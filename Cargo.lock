@@ -2662,6 +2662,7 @@ dependencies = [
  "cpal",
  "env_logger",
  "glyphon",
+ "libc",
  "log",
  "notify",
  "pollster",

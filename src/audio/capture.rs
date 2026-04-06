@@ -26,13 +26,48 @@ impl Drop for PaCapture {
     }
 }
 
+/// Run `f` with stderr temporarily redirected to /dev/null.
+/// Used to silence ALSA's noisy lib-level chatter during device probing
+/// (dmix/dsnoop/oss plugins complaining about unsupported stream directions).
+/// These messages are harmless but spam the terminal at startup.
+fn with_stderr_silenced<R, F: FnOnce() -> R>(f: F) -> R {
+    // SAFETY: we dup FD 2, replace it temporarily, then restore. All calls
+    // are wrapped in `unsafe` per libc conventions. If any libc call fails
+    // we fall back to running `f` without redirection.
+    unsafe {
+        let saved = libc::dup(libc::STDERR_FILENO);
+        if saved < 0 {
+            return f();
+        }
+        let devnull_path = b"/dev/null\0".as_ptr() as *const libc::c_char;
+        let devnull = libc::open(devnull_path, libc::O_WRONLY);
+        if devnull < 0 {
+            libc::close(saved);
+            return f();
+        }
+        libc::dup2(devnull, libc::STDERR_FILENO);
+        libc::close(devnull);
+
+        let result = f();
+
+        libc::dup2(saved, libc::STDERR_FILENO);
+        libc::close(saved);
+        result
+    }
+}
+
 pub fn list_input_devices() -> Vec<(usize, String)> {
     let host = cpal::default_host();
-    match host.input_devices() {
-        Ok(devices) => devices
-            .enumerate()
-            .map(|(i, d)| (i, d.name().unwrap_or_else(|_| format!("device-{}", i))))
-            .collect(),
+    // Silence ALSA's noisy startup chatter during probing.
+    let probe_result = with_stderr_silenced(|| {
+        host.input_devices().map(|devs| {
+            devs.enumerate()
+                .map(|(i, d)| (i, d.name().unwrap_or_else(|_| format!("device-{}", i))))
+                .collect::<Vec<_>>()
+        })
+    });
+    match probe_result {
+        Ok(devices) => devices,
         Err(e) => {
             log::error!("Failed to enumerate audio devices: {}", e);
             vec![]
@@ -114,21 +149,24 @@ pub fn start_capture(
         }
     }
 
-    // ALSA / default path via cpal.
+    // ALSA / default path via cpal. Silence ALSA's noisy probing chatter
+    // during device resolution, stream construction, and start.
     let host = cpal::default_host();
 
-    let device = match device_name {
-        Some(name) => find_device(&host, name)?,
+    let device = with_stderr_silenced(|| match device_name {
+        Some(name) => find_device(&host, name),
         None => host
             .default_input_device()
-            .ok_or_else(|| "No default audio input device found".to_string())?,
-    };
+            .ok_or_else(|| "No default audio input device found".to_string()),
+    })?;
 
     log::info!("Audio device: {}", device.name().unwrap_or_default());
 
-    let supported_config = device
-        .default_input_config()
-        .map_err(|e| format!("No supported input config: {}", e))?;
+    let supported_config = with_stderr_silenced(|| {
+        device
+            .default_input_config()
+            .map_err(|e| format!("No supported input config: {}", e))
+    })?;
 
     let config: StreamConfig = supported_config.clone().into();
     let channels = config.channels as usize;
@@ -136,22 +174,26 @@ pub fn start_capture(
 
     let mut analyzer = AudioAnalyzer::new(sample_rate);
 
-    let stream = device
-        .build_input_stream(
-            &config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let (level, bands) = analyzer.process(data, channels);
-                audio_state.store_level(level);
-                audio_state.store_bands(&bands);
-            },
-            |err| log::error!("Audio stream error: {}", err),
-            None,
-        )
-        .map_err(|e| format!("Failed to build audio stream: {}", e))?;
+    let stream = with_stderr_silenced(|| {
+        device
+            .build_input_stream(
+                &config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    let (level, bands) = analyzer.process(data, channels);
+                    audio_state.store_level(level);
+                    audio_state.store_bands(&bands);
+                },
+                |err| log::error!("Audio stream error: {}", err),
+                None,
+            )
+            .map_err(|e| format!("Failed to build audio stream: {}", e))
+    })?;
 
-    stream
-        .play()
-        .map_err(|e| format!("Failed to start audio stream: {}", e))?;
+    with_stderr_silenced(|| {
+        stream
+            .play()
+            .map_err(|e| format!("Failed to start audio stream: {}", e))
+    })?;
 
     Ok(AudioStreamHandle::Cpal(stream))
 }

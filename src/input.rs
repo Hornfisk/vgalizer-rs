@@ -19,15 +19,18 @@ pub enum Action {
     PickerJump(usize), // 1-indexed
     PickerConfirm,
     PickerCancel,
+    // DJ name text input
+    ToggleTextInput,
 }
 
 pub struct InputHandler {
     pub picker_open: bool,
+    pub text_input_open: bool,
 }
 
 impl InputHandler {
     pub fn new() -> Self {
-        Self { picker_open: false }
+        Self { picker_open: false, text_input_open: false }
     }
 
     pub fn handle(&self, event: &KeyEvent) -> Option<Action> {
@@ -37,6 +40,12 @@ impl InputHandler {
         let PhysicalKey::Code(key) = event.physical_key else {
             return None;
         };
+
+        // While the text input is open, the app routes raw KeyEvents
+        // directly to the text-input state. Don't interpret any keys here.
+        if self.text_input_open {
+            return None;
+        }
 
         // A always toggles the picker regardless of mode
         if key == KeyCode::KeyA {
@@ -81,6 +90,7 @@ impl InputHandler {
             KeyCode::KeyH => Some(Action::ToggleHelp),
             KeyCode::KeyF => Some(Action::ToggleFullscreen),
             KeyCode::KeyW => Some(Action::ToggleWindowed),
+            KeyCode::KeyT => Some(Action::ToggleTextInput),
             KeyCode::KeyQ | KeyCode::Escape => Some(Action::Quit),
             _ => None,
         }

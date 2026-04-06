@@ -19,7 +19,7 @@ use crate::gpu::uniforms::pack_bands;
 use crate::input::{Action, InputHandler};
 use crate::overlay::HudOverlay;
 use crate::postprocess::PostProcessChain;
-use crate::text::NameOverlay;
+use crate::text::{NameOverlay, TextInputOverlay};
 
 pub fn run(config: Config, config_path: String) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
@@ -52,6 +52,8 @@ struct AppState {
     hud: HudOverlay,
     audio_picker: Option<AudioPicker>,
     audio_picker_overlay: AudioPickerOverlay,
+    text_input_overlay: TextInputOverlay,
+    text_input_buffer: Option<String>,
     input: InputHandler,
     scene: SceneManager,
     beat_tracker: BeatTracker,
@@ -152,6 +154,7 @@ impl ApplicationHandler for App {
 
         let hud = HudOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
         let audio_picker_overlay = AudioPickerOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
+        let text_input_overlay = TextInputOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
 
         let beat_tracker = BeatTracker::new(config.beat_sensitivity);
 
@@ -169,6 +172,8 @@ impl ApplicationHandler for App {
             hud,
             audio_picker: None,
             audio_picker_overlay,
+            text_input_overlay,
+            text_input_buffer: None,
             input: InputHandler::new(),
             scene,
             beat_tracker,
@@ -201,6 +206,13 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::KeyboardInput { event: key_event, .. } => {
+                // While the text-input overlay is open, consume KeyEvents
+                // directly as editing input rather than letting the normal
+                // input handler interpret them.
+                if state.input.text_input_open {
+                    handle_text_input_key(state, &key_event);
+                    return;
+                }
                 if let Some(action) = state.input.handle(&key_event) {
                     match action {
                         Action::Quit => event_loop.exit(),
@@ -221,6 +233,11 @@ impl ApplicationHandler for App {
                         }
                         Action::ToggleWindowed => {
                             state.window.set_fullscreen(None);
+                        }
+                        Action::ToggleTextInput => {
+                            // Open the text editor pre-populated with the current name.
+                            state.text_input_buffer = Some(state.config.dj_name.clone());
+                            state.input.text_input_open = true;
                         }
                         Action::ToggleAudioPicker => {
                             if state.audio_picker.is_some() {
@@ -575,8 +592,78 @@ impl App {
             );
         }
 
+        // --- Text input overlay (only when open) ---
+        if let Some(buf) = &state.text_input_buffer {
+            state.text_input_overlay.tick(dt);
+            state.text_input_overlay.update_text(buf);
+            state.text_input_overlay.render(
+                &state.gpu.device,
+                &state.gpu.queue,
+                &mut encoder,
+                &output_view,
+                state.gpu.size,
+            );
+        }
+
         state.gpu.queue.submit([encoder.finish()]);
         output.present();
+    }
+}
+
+/// Process a raw KeyEvent while the DJ-name text-input overlay is open.
+/// Handles character entry (via KeyEvent.text), Backspace, Enter (commit),
+/// and Escape (cancel). On commit, the new name is pushed to the live
+/// NameOverlay and persisted to the XDG config file.
+fn handle_text_input_key(state: &mut AppState, ev: &winit::event::KeyEvent) {
+    use winit::event::ElementState;
+    use winit::keyboard::{Key, NamedKey};
+
+    if ev.state != ElementState::Pressed {
+        return;
+    }
+
+    match &ev.logical_key {
+        Key::Named(NamedKey::Escape) => {
+            // Cancel — discard edits.
+            state.text_input_buffer = None;
+            state.input.text_input_open = false;
+            return;
+        }
+        Key::Named(NamedKey::Enter) => {
+            if let Some(new_name) = state.text_input_buffer.take() {
+                let trimmed = new_name.trim();
+                if !trimmed.is_empty() {
+                    state.name_overlay.set_name(trimmed);
+                    state.config.dj_name = trimmed.to_string();
+                    if let Err(e) = crate::config::write_dj_name(trimmed) {
+                        log::warn!("Could not persist dj_name to config: {}", e);
+                    } else {
+                        log::info!("DJ name updated to '{}'", trimmed);
+                    }
+                }
+            }
+            state.input.text_input_open = false;
+            return;
+        }
+        Key::Named(NamedKey::Backspace) => {
+            if let Some(buf) = state.text_input_buffer.as_mut() {
+                buf.pop();
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    // Append any printable text associated with this key (respects keyboard
+    // layout, Shift, etc.). Ignores control characters.
+    if let Some(text) = ev.text.as_ref() {
+        if let Some(buf) = state.text_input_buffer.as_mut() {
+            for ch in text.chars() {
+                if !ch.is_control() {
+                    buf.push(ch);
+                }
+            }
+        }
     }
 }
 

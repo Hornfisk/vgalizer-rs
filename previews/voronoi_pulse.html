@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>voronoi_pulse — vgalizer preview</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px;
+    color: #fff; font: 12px/1.3 ui-monospace, Menlo, Consolas, monospace;
+    opacity: 0.85; pointer-events: none;
+    text-shadow: 0 0 4px rgba(0,0,0,0.8);
+    transition: opacity 0.6s ease;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">voronoi_pulse — click / SPACE = beat</div>
+<script>
+(function () {
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+  if (!gl) {
+    const p = document.createElement('p');
+    p.style.cssText = 'color:#fff;font-family:sans-serif;padding:20px';
+    p.textContent = 'WebGL2 not available.';
+    document.body.appendChild(p);
+    return;
+  }
+
+  const VS = `#version 300 es
+  in vec2 a_pos;
+  void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+  `;
+
+  const FS = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+
+  uniform vec2  u_resolution;
+  uniform float u_time;
+  uniform float u_level;
+  uniform float u_beat;
+  uniform float u_pulse;
+  uniform float u_bands[8];
+
+  #define NUM_POINTS 42
+
+  vec2 hash2(float i) {
+      return fract(sin(vec2(i*12.9898, i*78.233)) * 43758.5453);
+  }
+  float hash1(float i) {
+      return fract(sin(i*45.164)*43758.5453);
+  }
+
+  float vnoise(float x) {
+      float i = floor(x);
+      float f = fract(x);
+      float a = hash1(i);
+      float b = hash1(i+1.0);
+      f = f*f*(3.0-2.0*f);
+      return mix(a, b, f);
+  }
+
+  vec2 seedPos(int idx, float t, float jitter) {
+      float fi = float(idx);
+      vec2 h = hash2(fi+1.0);
+      vec2 base = vec2(h.x*2.4-1.2, h.y*2.0-1.0);
+      float spd  = 0.25 + h.x*0.45;
+      float rad  = 0.10 + h.y*0.18;
+      float ph   = fi*1.7;
+      vec2 orbit = vec2(sin(t*spd + ph), cos(t*spd*0.83 + ph*1.3)) * rad;
+      vec2 drift = vec2(vnoise(t*0.3 + fi)*2.0-1.0,
+                        vnoise(t*0.27 + fi+13.7)*2.0-1.0) * 0.08;
+      vec2 jdir = normalize(hash2(fi+57.0)*2.0-1.0 + 0.0001);
+      vec2 jit  = jdir * jitter * (0.5 + hash1(fi+9.0)*0.5);
+      return base + orbit + drift + jit;
+  }
+
+  void main() {
+      vec2 fragCoord = gl_FragCoord.xy;
+      vec2 res = u_resolution;
+      float aspect = res.x / res.y;
+      vec2 uv = (fragCoord / res) * 2.0 - 1.0;
+      uv.x *= aspect;
+
+      float t = u_time;
+
+      float bass = u_bands[0]*0.6 + u_bands[1]*0.4;
+      float jitterAmt = u_pulse * (0.05 + 0.10*bass);
+
+      vec2 hp1 = vec2(sin(t*0.31)*0.7*aspect, cos(t*0.27)*0.6);
+      vec2 hp2 = vec2(cos(t*0.19+1.7)*0.8*aspect, sin(t*0.23+0.4)*0.55);
+
+      float F1 = 1e9;
+      float F2 = 1e9;
+      int idx1 = 0;
+      float bestHp1 = 1e9; int idxHp1 = 0;
+      float bestHp2 = 1e9; int idxHp2 = 0;
+
+      for (int i = 0; i < NUM_POINTS; i++) {
+          vec2 p = seedPos(i, t, jitterAmt);
+          float d = distance(uv, p);
+          if (d < F1) { F2 = F1; F1 = d; idx1 = i; }
+          else if (d < F2) { F2 = d; }
+
+          float d1 = distance(hp1, p);
+          if (d1 < bestHp1) { bestHp1 = d1; idxHp1 = i; }
+          float d2 = distance(hp2, p);
+          if (d2 < bestHp2) { bestHp2 = d2; idxHp2 = i; }
+      }
+
+      float edge = F2 - F1;
+      float thickness = 0.006 + 0.004*u_pulse;
+      float aa = 0.0025;
+      float line = 1.0 - smoothstep(thickness, thickness + aa, edge);
+
+      vec2 cuv = uv; cuv.x /= aspect;
+      float vign = smoothstep(1.15, 0.15, length(cuv));
+      vign = mix(0.35, 1.0, vign);
+
+      vec3 white = vec3(1.0);
+      vec3 magenta = vec3(1.0, 0.18, 0.85);
+
+      bool accent = (idx1 == idxHp1) || (idx1 == idxHp2);
+      vec3 col = accent ? magenta : white;
+
+      float bright = (0.7 + 0.5*u_level + 0.6*u_pulse);
+      col *= line * vign * bright;
+
+      outColor = vec4(col, 1.0);
+  }
+  `;
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s), src);
+      throw new Error('shader compile failed');
+    }
+    return s;
+  }
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    throw new Error('program link failed');
+  }
+  gl.useProgram(prog);
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,  3, -1,  -1, 3
+  ]), gl.STATIC_DRAW);
+  const aLoc = gl.getAttribLocation(prog, 'a_pos');
+  gl.enableVertexAttribArray(aLoc);
+  gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+
+  const uRes   = gl.getUniformLocation(prog, 'u_resolution');
+  const uTime  = gl.getUniformLocation(prog, 'u_time');
+  const uLevel = gl.getUniformLocation(prog, 'u_level');
+  const uBeat  = gl.getUniformLocation(prog, 'u_beat');
+  const uPulse = gl.getUniformLocation(prog, 'u_pulse');
+  const uBands = gl.getUniformLocation(prog, 'u_bands[0]');
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.floor(window.innerWidth * dpr);
+    const h = Math.floor(window.innerHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  let pulse = 0.0;
+  let lastBeatBucket = -1;
+  const beatInterval = 0.5;
+
+  function kick() { pulse = 1.0; }
+  window.addEventListener('mousedown', kick);
+  window.addEventListener('keydown', (e) => { if (e.code === 'Space') { e.preventDefault(); kick(); } });
+
+  const hint = document.getElementById('hint');
+  setTimeout(() => { hint.style.opacity = '0'; }, 3000);
+
+  const start = performance.now();
+  let prevT = start;
+  const bands = new Float32Array(8);
+
+  function frame(now) {
+    const t = (now - start) * 0.001;
+    const dt = (now - prevT) * 0.001;
+    prevT = now;
+
+    const level = 0.5 + 0.4*Math.sin(t*0.7) + 0.1*Math.sin(t*3.1);
+
+    const bucket = Math.floor(t / beatInterval);
+    if (bucket > lastBeatBucket) {
+      pulse = 1.0;
+      lastBeatBucket = bucket;
+    }
+
+    const decay = Math.pow(0.92, dt / 0.0166667);
+    pulse *= decay;
+
+    for (let i = 0; i < 8; i++) {
+      let v = 0.5 + 0.4*Math.sin(t*(0.6 + i*0.27) + i*1.3) + 0.1*Math.sin(t*(2.0+i*0.4));
+      if (v < 0) v = 0; else if (v > 1) v = 1;
+      bands[i] = v;
+    }
+
+    gl.useProgram(prog);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uLevel, level);
+    gl.uniform1f(uBeat, pulse > 0.85 ? 1.0 : 0.0);
+    gl.uniform1f(uPulse, pulse);
+    gl.uniform1fv(uBands, bands);
+
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>curl_flow preview</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; font-family: ui-monospace, Menlo, monospace; }
+  canvas { display:block; width:100vw; height:100vh; background:#000; }
+  #hint {
+    position:fixed; left:14px; bottom:12px; color:#cfefff; opacity:0.85;
+    font-size:12px; letter-spacing:0.5px; pointer-events:none;
+    text-shadow: 0 0 6px rgba(0,200,255,0.4);
+    transition: opacity 1.2s ease;
+  }
+  #hint.hidden { opacity: 0; }
+  #fallback { color:#fff; font-family: sans-serif; padding: 12px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">curl_flow &middot; click / SPACE = beat</div>
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false, alpha: false });
+  if (!gl) {
+    const p = document.createElement('p');
+    p.id = 'fallback';
+    p.textContent = 'WebGL2 required';
+    document.body.appendChild(p);
+    return;
+  }
+
+  // ---------- helpers ----------
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+      console.error(src);
+      throw new Error('shader compile failed');
+    }
+    return s;
+  }
+  function program(vsSrc, fsSrc) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      console.error(gl.getProgramInfoLog(p));
+      throw new Error('link failed');
+    }
+    return p;
+  }
+
+  // ---------- fullscreen quad ----------
+  const quadVB = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadVB);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1,-1,  1,-1,  -1,1,
+     1,-1,  1, 1,  -1,1,
+  ]), gl.STATIC_DRAW);
+
+  const VS_QUAD = `#version 300 es
+  layout(location=0) in vec2 a_pos;
+  out vec2 v_uv;
+  void main(){ v_uv = a_pos*0.5+0.5; gl_Position = vec4(a_pos,0.0,1.0); }`;
+
+  // ---------- common GLSL ----------
+  const COMMON = `
+  // hash + value-noise based curl noise
+  float hash(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
+  float vnoise(vec2 p){
+    vec2 i = floor(p), f = fract(p);
+    float a = hash(i);
+    float b = hash(i+vec2(1.0,0.0));
+    float c = hash(i+vec2(0.0,1.0));
+    float d = hash(i+vec2(1.0,1.0));
+    vec2 u = f*f*(3.0-2.0*f);
+    return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+  }
+  float fbm(vec2 p){
+    float v=0.0, a=0.5;
+    for(int i=0;i<5;i++){ v += a*vnoise(p); p *= 2.02; a *= 0.5; }
+    return v;
+  }
+  // potential -> curl (2D): velocity = (dPsi/dy, -dPsi/dx)
+  vec2 curlField(vec2 p, float t, float scale, float warp){
+    float e = 0.01;
+    vec2 q = p*scale + vec2(0.0, t*0.05);
+    q += warp*vec2(fbm(q+13.0), fbm(q-7.0));
+    float n1 = fbm(q + vec2(0.0, e));
+    float n2 = fbm(q - vec2(0.0, e));
+    float n3 = fbm(q + vec2(e, 0.0));
+    float n4 = fbm(q - vec2(e, 0.0));
+    return vec2(n1-n2, -(n3-n4))/(2.0*e);
+  }`;
+
+  // ---------- advect/fade pass ----------
+  const FS_ADVECT = `#version 300 es
+  precision highp float;
+  in vec2 v_uv;
+  out vec4 outColor;
+  uniform sampler2D u_prev;
+  uniform vec2  u_res;
+  uniform float u_time;
+  uniform float u_level;
+  uniform float u_pulse;
+  uniform float u_burst;
+  ${COMMON}
+  void main(){
+    vec2 uv = v_uv;
+    vec2 p = (uv - 0.5) * vec2(u_res.x/u_res.y, 1.0);
+    float scale = 2.2 + u_burst*1.6;
+    float warp  = 0.35 + u_burst*0.4;
+    vec2 v = curlField(p, u_time, scale, warp);
+    float vl = length(v) + 1e-5;
+    v /= vl;
+    float speed = (0.6 + 1.4*u_level + 1.2*u_pulse) / max(u_res.x, u_res.y);
+    vec2 sampUV = uv - v * speed * 1.6;
+
+    vec4 prev = texture(u_prev, sampUV);
+
+    float fade = 0.962 - 0.01*u_pulse;
+    prev.rgb *= fade;
+
+    vec2 px = 1.0/u_res;
+    vec4 d =
+        texture(u_prev, sampUV + vec2( px.x, 0.0)) +
+        texture(u_prev, sampUV - vec2( px.x, 0.0)) +
+        texture(u_prev, sampUV + vec2(0.0,  px.y)) +
+        texture(u_prev, sampUV - vec2(0.0,  px.y));
+    vec4 blur = (prev*0.6) + (d*0.1);
+    blur.rgb = max(blur.rgb - 0.0015, vec3(0.0));
+    outColor = blur;
+  }`;
+
+  // ---------- inject pass ----------
+  const FS_INJECT = `#version 300 es
+  precision highp float;
+  in vec2 v_uv;
+  out vec4 outColor;
+  uniform sampler2D u_prev;
+  uniform vec2  u_res;
+  uniform float u_time;
+  uniform float u_level;
+  uniform float u_pulse;
+  uniform float u_burst;
+  uniform float u_bands[8];
+  ${COMMON}
+
+  float lines(vec2 p, vec2 v, float k, float thick){
+    vec2 n = vec2(-v.y, v.x);
+    float s = dot(p, n) * k;
+    float band = sin(s);
+    float a = smoothstep(1.0 - thick, 1.0, abs(band));
+    return a;
+  }
+
+  void main(){
+    vec2 uv = v_uv;
+    vec2 p = (uv - 0.5) * vec2(u_res.x/u_res.y, 1.0);
+
+    float scale = 2.2 + u_burst*1.6;
+    float warp  = 0.35 + u_burst*0.4;
+    vec2 v1 = curlField(p, u_time*0.9, scale, warp);
+    v1 = normalize(v1 + 1e-5);
+
+    vec2 v2 = curlField(p + vec2(2.7,-1.3), u_time*1.1 + 5.0, scale*1.55, warp*0.8);
+    v2 = normalize(v2 + 1e-5);
+
+    float k1 = 90.0 + 60.0*u_bands[2] + 30.0*u_burst;
+    float k2 = 130.0 + 70.0*u_bands[5];
+    float thick1 = 0.10 + 0.04*u_level;
+    float thick2 = 0.07 + 0.03*u_bands[6];
+
+    float L1 = lines(p, v1, k1, thick1);
+    float L2 = lines(p, v2, k2, thick2);
+
+    float mask = smoothstep(0.15, 0.9, fbm(p*1.4 + u_time*0.07));
+    L1 *= mask;
+    L2 *= mask*0.85;
+
+    vec3 colA = vec3(0.85, 0.97, 1.0);
+    float crs = L1 * L2;
+    vec3 accent = vec3(1.0, 0.35, 0.7);
+
+    vec3 add = colA * L1 * (0.55 + 0.6*u_level)
+             + colA * L2 * (0.35 + 0.5*u_bands[4])
+             + accent * crs * (1.6 + 2.5*u_pulse);
+
+    float r = length(p);
+    add += colA * exp(-r*4.5) * u_pulse * 0.15;
+
+    vec4 prev = texture(u_prev, uv);
+    vec3 col = prev.rgb + add * (0.07 + 0.05*u_level + 0.10*u_pulse);
+
+    col = min(col, vec3(1.6));
+    outColor = vec4(col, 1.0);
+  }`;
+
+  // ---------- present pass ----------
+  const FS_PRESENT = `#version 300 es
+  precision highp float;
+  in vec2 v_uv;
+  out vec4 outColor;
+  uniform sampler2D u_tex;
+  void main(){
+    vec3 c = texture(u_tex, v_uv).rgb;
+    c = c / (1.0 + c*0.6);
+    c = pow(c, vec3(0.92));
+    outColor = vec4(c, 1.0);
+  }`;
+
+  const progAdvect  = program(VS_QUAD, FS_ADVECT);
+  const progInject  = program(VS_QUAD, FS_INJECT);
+  const progPresent = program(VS_QUAD, FS_PRESENT);
+
+  function bindQuad(p) {
+    gl.useProgram(p);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVB);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  }
+
+  // ---------- ping-pong FBOs ----------
+  let fbo = [null, null], tex = [null, null];
+  let fbW = 0, fbH = 0;
+
+  function ensureFBO(w, h) {
+    if (w === fbW && h === fbH && fbo[0]) return;
+    fbW = w; fbH = h;
+    const ext = gl.getExtension('EXT_color_buffer_float');
+    const internal = ext ? gl.RGBA16F : gl.RGBA;
+    const type = ext ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+    for (let i = 0; i < 2; i++) {
+      if (tex[i]) gl.deleteTexture(tex[i]);
+      if (fbo[i]) gl.deleteFramebuffer(fbo[i]);
+      tex[i] = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex[i]);
+      gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, gl.RGBA, type, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      fbo[i] = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo[i]);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex[i], 0);
+      gl.viewport(0, 0, w, h);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  // ---------- resize ----------
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const w = Math.max(2, Math.floor(window.innerWidth  * dpr));
+    const h = Math.max(2, Math.floor(window.innerHeight * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+    }
+    ensureFBO(w, h);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- audio sim state ----------
+  let pulse = 0;
+  let burst = 0;
+  let lastBeat = 0;
+  const BPM = 120;
+  const beatPeriod = 60 / BPM;
+
+  function manualBeat() {
+    pulse = 1.0;
+    burst = Math.min(1.5, burst + 0.9);
+  }
+  window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); manualBeat(); }});
+  window.addEventListener('mousedown', manualBeat);
+  window.addEventListener('touchstart', manualBeat, {passive:true});
+
+  // hint fade
+  const hint = document.getElementById('hint');
+  setTimeout(() => hint.classList.add('hidden'), 3000);
+
+  // ---------- uniform locations ----------
+  const uA = {
+    prev:  gl.getUniformLocation(progAdvect, 'u_prev'),
+    res:   gl.getUniformLocation(progAdvect, 'u_res'),
+    time:  gl.getUniformLocation(progAdvect, 'u_time'),
+    level: gl.getUniformLocation(progAdvect, 'u_level'),
+    pulse: gl.getUniformLocation(progAdvect, 'u_pulse'),
+    burst: gl.getUniformLocation(progAdvect, 'u_burst'),
+  };
+  const uI = {
+    prev:  gl.getUniformLocation(progInject, 'u_prev'),
+    res:   gl.getUniformLocation(progInject, 'u_res'),
+    time:  gl.getUniformLocation(progInject, 'u_time'),
+    level: gl.getUniformLocation(progInject, 'u_level'),
+    pulse: gl.getUniformLocation(progInject, 'u_pulse'),
+    burst: gl.getUniformLocation(progInject, 'u_burst'),
+    bands: gl.getUniformLocation(progInject, 'u_bands[0]'),
+  };
+  const uP = {
+    tex: gl.getUniformLocation(progPresent, 'u_tex'),
+  };
+
+  // ---------- main loop ----------
+  let src = 0, dst = 1;
+  const start = performance.now();
+  let lastFrame = start;
+  const bands = new Float32Array(8);
+
+  function frame(now) {
+    const t = (now - start) / 1000;
+    const dt = Math.min(0.05, (now - lastFrame) / 1000);
+    lastFrame = now;
+
+    // simulated audio
+    const level = Math.max(0, Math.min(1, 0.5 + 0.4*Math.sin(t*0.7) + 0.1*Math.sin(t*3.1)));
+    for (let i = 0; i < 8; i++) {
+      bands[i] = Math.max(0, Math.min(1, 0.5 + 0.5*Math.sin(t*(i+1)*0.9 + i)));
+    }
+
+    // 120 BPM beat
+    if (t - lastBeat >= beatPeriod) {
+      lastBeat += beatPeriod;
+      pulse = 1.0;
+      burst = Math.min(1.5, burst + 0.9);
+    }
+    pulse *= Math.pow(0.92, dt*60);
+    burst *= Math.pow(0.965, dt*60);
+
+    // 1) advect/fade pass: src -> dst
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo[dst]);
+    gl.viewport(0, 0, fbW, fbH);
+    bindQuad(progAdvect);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex[src]);
+    gl.uniform1i(uA.prev, 0);
+    gl.uniform2f(uA.res, fbW, fbH);
+    gl.uniform1f(uA.time, t);
+    gl.uniform1f(uA.level, level);
+    gl.uniform1f(uA.pulse, pulse);
+    gl.uniform1f(uA.burst, burst);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    [src, dst] = [dst, src];
+
+    // 2) inject pass: src -> dst
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo[dst]);
+    gl.viewport(0, 0, fbW, fbH);
+    bindQuad(progInject);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex[src]);
+    gl.uniform1i(uI.prev, 0);
+    gl.uniform2f(uI.res, fbW, fbH);
+    gl.uniform1f(uI.time, t);
+    gl.uniform1f(uI.level, level);
+    gl.uniform1f(uI.pulse, pulse);
+    gl.uniform1f(uI.burst, burst);
+    gl.uniform1fv(uI.bands, bands);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    [src, dst] = [dst, src];
+
+    // 3) present src to screen
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    bindQuad(progPresent);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex[src]);
+    gl.uniform1i(uP.tex, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

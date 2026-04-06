@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>line_moire</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;overflow:hidden;height:100%;}
+  canvas{display:block;width:100vw;height:100vh;}
+  #hint{
+    position:fixed;left:12px;bottom:10px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11px;color:#cfd; opacity:0.55;
+    pointer-events:none;letter-spacing:0.5px;
+    text-shadow:0 0 4px rgba(0,255,200,0.25);
+    transition:opacity 1.2s ease-out;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">click / space = beat &middot; BPM 120</div>
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {antialias:false, premultipliedAlpha:false});
+if(!gl){
+  const msg = document.createElement('p');
+  msg.style.cssText = 'color:#fff;font-family:monospace';
+  msg.textContent = 'WebGL2 not available';
+  document.body.appendChild(msg);
+  throw new Error('no webgl2');
+}
+
+const VS = `#version 300 es
+void main(){
+  vec2 p = vec2((gl_VertexID==1)?3.0:-1.0, (gl_VertexID==2)?3.0:-1.0);
+  gl_Position = vec4(p,0.0,1.0);
+}`;
+
+const FS = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_level;
+uniform float u_pulse;
+uniform float u_bands[8];
+
+#define PI 3.14159265359
+
+mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
+
+float aaLine(float d, float halfWidth, float aa){
+  return 1.0 - smoothstep(halfWidth - aa, halfWidth + aa, d);
+}
+
+float lineField(vec2 p, vec2 dir, float spacing, float halfWidth, float aa){
+  float coord = dot(p, dir);
+  float m = coord / spacing;
+  float frac = m - floor(m + 0.5);
+  float d = abs(frac) * spacing;
+  return aaLine(d, halfWidth, aa);
+}
+
+vec2 lensWarp(vec2 p, float strength){
+  float r = length(p);
+  float k = strength / (0.25 + r*r*3.0);
+  return p - normalize(p + 1e-6) * k * 0.15;
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*u_res) / min(u_res.x, u_res.y);
+
+  float breath = 1.0 + 0.06*sin(u_time*0.6) + 0.03*u_level;
+  uv *= breath;
+
+  float baseAngle = u_time * 0.07;
+  uv = rot(baseAngle) * uv;
+
+  float bass = clamp(u_bands[0]*0.6 + u_bands[1]*0.4, 0.0, 1.0);
+  float lensK = 0.35 * bass + 0.6 * u_pulse;
+  vec2 wp = lensWarp(uv, lensK);
+
+  float kick = u_pulse * 0.35;
+
+  float baseOffset = 0.045 + 0.025*sin(u_time*0.23) + 0.02*u_bands[3];
+  float offset = baseOffset + kick;
+
+  float spacing  = 0.022 + 0.004*sin(u_time*0.31);
+  float spacing2 = spacing * (1.0 + 0.03 + 0.015*sin(u_time*0.17));
+
+  float pxToUV = 1.0 / min(u_res.x, u_res.y);
+  float halfWidth = 0.55 * pxToUV;
+  float aa        = 0.9  * pxToUV;
+
+  vec2 dirA = vec2(cos(0.0 + offset*0.5), sin(0.0 + offset*0.5));
+  vec2 dirB = vec2(cos(offset*1.8),       sin(offset*1.8));
+  vec2 dirC = vec2(cos(-offset*1.1+0.08), sin(-offset*1.1+0.08));
+
+  float A = lineField(wp, dirA, spacing,  halfWidth, aa);
+  float B = lineField(wp, dirB, spacing2, halfWidth, aa);
+  float C = lineField(wp * (1.0 + 0.05*sin(u_time*0.4)), dirC, spacing*1.37, halfWidth*0.85, aa);
+
+  float white = max(A, B);
+  float interfere = A * B;
+  white = clamp(white + interfere*0.6, 0.0, 1.0);
+
+  float vig = smoothstep(1.15, 0.25, length(uv));
+  white *= mix(0.55, 1.0, vig);
+
+  vec3 primary = vec3(0.92, 0.98, 1.0) * white;
+
+  float accentAmt = clamp(0.25 + 0.75*u_pulse, 0.0, 1.0);
+  vec3 accent = vec3(1.0, 0.15, 0.55) * C * accentAmt;
+
+  vec3 col = primary + accent;
+  col = clamp(col, 0.0, 1.0);
+
+  fragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s));
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog));
+  throw new Error('link failed');
+}
+gl.useProgram(prog);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+
+const uRes   = gl.getUniformLocation(prog, 'u_res');
+const uTime  = gl.getUniformLocation(prog, 'u_time');
+const uLevel = gl.getUniformLocation(prog, 'u_level');
+const uPulse = gl.getUniformLocation(prog, 'u_pulse');
+const uBands = gl.getUniformLocation(prog, 'u_bands[0]');
+
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(window.innerWidth * dpr);
+  const h = Math.floor(window.innerHeight * dpr);
+  if(canvas.width !== w || canvas.height !== h){
+    canvas.width = w; canvas.height = h;
+  }
+  gl.viewport(0,0,canvas.width,canvas.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+let pulse = 0.0;
+let lastBeatT = 0.0;
+const BEAT_INTERVAL = 0.5;
+
+function kickBeat(){ pulse = 1.0; }
+window.addEventListener('keydown', e => { if(e.code === 'Space'){ e.preventDefault(); kickBeat(); }});
+window.addEventListener('mousedown', kickBeat);
+window.addEventListener('touchstart', kickBeat, {passive:true});
+
+const hint = document.getElementById('hint');
+const startWall = performance.now();
+let hintFaded = false;
+
+const t0 = performance.now();
+const bands = new Float32Array(8);
+
+function frame(){
+  const t = (performance.now() - t0) / 1000.0;
+
+  let level = 0.5 + 0.4*Math.sin(t*0.7) + 0.1*Math.sin(t*3.1);
+  if(level<0) level=0; if(level>1) level=1;
+
+  if(t - lastBeatT >= BEAT_INTERVAL){
+    lastBeatT += BEAT_INTERVAL;
+    pulse = 1.0;
+  }
+  pulse *= 0.92;
+
+  for(let i=0;i<8;i++){
+    let b = 0.5 + 0.5*Math.sin(t*(i+1)*0.9 + i);
+    if(b<0) b=0; if(b>1) b=1;
+    bands[i] = b;
+  }
+
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
+  gl.uniform1f(uLevel, level);
+  gl.uniform1f(uPulse, pulse);
+  gl.uniform1fv(uBands, bands);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  if(!hintFaded && (performance.now() - startWall) > 3000){
+    hint.style.opacity = '0';
+    hintFaded = true;
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

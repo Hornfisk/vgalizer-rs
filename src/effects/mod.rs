@@ -14,6 +14,12 @@ pub const EFFECT_NAMES: &[&str] = &[
     "spectrum_orbit",
     "spectrum_terrain",
     "spectrum_wave",
+    // v2 additions (techno / minimal / op-art set)
+    "line_moire",
+    "mandelbrot_zoom",
+    "strange_attractor",
+    "wire_tunnel",
+    "voronoi_pulse",
 ];
 
 // Shader sources embedded at compile time.
@@ -37,6 +43,12 @@ fn effect_source(name: &str) -> &'static str {
         "spectrum_orbit" => effect_src!("spectrum_orbit"),
         "spectrum_terrain" => effect_src!("spectrum_terrain"),
         "spectrum_wave" => effect_src!("spectrum_wave"),
+        // v2 additions
+        "line_moire" => effect_src!("line_moire"),
+        "mandelbrot_zoom" => effect_src!("mandelbrot_zoom"),
+        "strange_attractor" => effect_src!("strange_attractor"),
+        "wire_tunnel" => effect_src!("wire_tunnel"),
+        "voronoi_pulse" => effect_src!("voronoi_pulse"),
         _ => panic!("Unknown effect: {}", name),
     }
 }

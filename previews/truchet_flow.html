@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>truchet_flow preview</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    color: rgba(255,255,255,0.55); font-size: 11px; letter-spacing: 0.5px;
+    pointer-events: none; transition: opacity 1.2s ease;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">click/space = beat &middot; BPM 120</div>
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const gl = canvas.getContext('webgl2', { antialias: true, premultipliedAlpha: false });
+  if (!gl) {
+    document.body.textContent = 'WebGL2 not available';
+    document.body.style.color = '#fff';
+    document.body.style.padding = '20px';
+    return;
+  }
+
+  const vsrc = `#version 300 es
+  precision highp float;
+  void main() {
+    vec2 p = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+    gl_Position = vec4(p, 0.0, 1.0);
+  }`;
+
+  const fsrc = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+
+  uniform vec2  u_res;
+  uniform float u_time;
+  uniform float u_level;
+  uniform float u_beat;
+  uniform float u_pulse;
+  uniform float u_bands[8];
+
+  float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+
+  float arcDist(vec2 uv, vec2 c, float r) {
+    return abs(length(uv - c) - r);
+  }
+
+  void main() {
+    vec2 frag = gl_FragCoord.xy;
+    vec2 res  = u_res;
+    float sh = min(res.x, res.y);
+    vec2 uv = (frag - 0.5 * res) / sh;
+
+    float t = u_time;
+    vec2 pan = vec2(t * 0.04, t * 0.025 + 0.3 * sin(t * 0.13));
+
+    float bass = clamp(u_level * 0.6 + u_bands[0] * 0.4, 0.0, 1.0);
+    float cellsAcross = mix(32.0, 24.0, bass) - 4.0 * u_pulse;
+    vec2 g = uv * cellsAcross + pan * cellsAcross * 0.5;
+
+    vec2 cellId = floor(g);
+    vec2 cellUv = fract(g) - 0.5;
+
+    float h = hash(cellId);
+
+    float phaseSpeed = 0.25 + 0.4 * hash(cellId + 17.3);
+    float phase = sin(t * phaseSpeed + h * 6.2831) * 0.5 + 0.5;
+
+    float ringR = length(cellId + 0.5);
+    float waveRadius = u_pulse * 30.0 + 6.0 * fract(t * 0.5) * 4.0;
+    float ringFlip = exp(-pow(ringR - waveRadius, 2.0) * 0.35) * (0.4 + u_pulse);
+
+    float ori = fract(phase + ringFlip);
+    float par = step(0.5, hash(cellId + 3.7));
+    float morph = smoothstep(0.42, 0.58, ori);
+    float morphFinal = (par > 0.5) ? morph : (1.0 - morph);
+
+    float r = 0.5;
+    float dA1 = arcDist(cellUv, vec2(-0.5, -0.5), r);
+    float dA2 = arcDist(cellUv, vec2( 0.5,  0.5), r);
+    float dA  = min(dA1, dA2);
+
+    float dB1 = arcDist(cellUv, vec2(-0.5,  0.5), r);
+    float dB2 = arcDist(cellUv, vec2( 0.5, -0.5), r);
+    float dB  = min(dB1, dB2);
+
+    float d = mix(dA, dB, morphFinal);
+
+    float pxPerCell = sh / cellsAcross;
+    float lineWidth = (1.4 + 1.6 * bass) / pxPerCell;
+    float aa = fwidth(d) * 1.2;
+
+    float line = smoothstep(lineWidth + aa, lineWidth - aa, d);
+
+    vec3 white  = vec3(1.0, 1.0, 1.0);
+    vec3 cyan   = vec3(0.25, 0.95, 1.0);
+    vec3 accent = mix(cyan, vec3(1.0, 0.25, 0.85), clamp(u_pulse * 0.9, 0.0, 1.0));
+
+    float accentMix = clamp(ringFlip * 1.4 + u_bands[5] * 0.25 + 0.05, 0.0, 1.0);
+    vec3 col = mix(white, accent, accentMix);
+
+    float bright = (0.75 + 0.55 * u_level + 0.6 * u_pulse);
+    vec3 finalCol = col * line * bright;
+
+    float vig = smoothstep(1.15, 0.25, length(uv));
+    finalCol *= mix(0.55, 1.0, vig);
+
+    float glow = exp(-d * 18.0) * 0.08 * (0.5 + u_level);
+    finalCol += col * glow * vig;
+
+    outColor = vec4(finalCol, 1.0);
+  }`;
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+    }
+    return s;
+  }
+  const vs = compile(gl.VERTEX_SHADER, vsrc);
+  const fs = compile(gl.FRAGMENT_SHADER, fsrc);
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+  }
+  gl.useProgram(prog);
+
+  const uRes   = gl.getUniformLocation(prog, 'u_res');
+  const uTime  = gl.getUniformLocation(prog, 'u_time');
+  const uLevel = gl.getUniformLocation(prog, 'u_level');
+  const uBeat  = gl.getUniformLocation(prog, 'u_beat');
+  const uPulse = gl.getUniformLocation(prog, 'u_pulse');
+  const uBands = gl.getUniformLocation(prog, 'u_bands[0]');
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width  = Math.floor(window.innerWidth  * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  let pulse = 0.0;
+  let lastBeatT = 0.0;
+  const BPM = 120;
+  const beatPeriod = 60.0 / BPM;
+
+  function kick() { pulse = 1.0; }
+  window.addEventListener('mousedown', kick);
+  window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); kick(); } });
+
+  const hint = document.getElementById('hint');
+  setTimeout(() => { hint.style.opacity = '0'; }, 3000);
+
+  const start = performance.now();
+  const bands = new Float32Array(8);
+
+  function frame() {
+    const t = (performance.now() - start) / 1000.0;
+
+    if (t - lastBeatT >= beatPeriod) {
+      lastBeatT += beatPeriod;
+      pulse = 1.0;
+    }
+    pulse *= 0.92;
+
+    const level = Math.max(0, Math.min(1, 0.5 + 0.4 * Math.sin(t * 0.7) + 0.1 * Math.sin(t * 3.1)));
+
+    for (let i = 0; i < 8; i++) {
+      bands[i] = Math.max(0, Math.min(1, 0.5 + 0.5 * Math.sin(t * (i + 1) * 0.9 + i)));
+    }
+
+    gl.useProgram(prog);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, t);
+    gl.uniform1f(uLevel, level);
+    gl.uniform1f(uBeat, pulse);
+    gl.uniform1f(uPulse, pulse);
+    gl.uniform1fv(uBands, bands);
+
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

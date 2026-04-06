@@ -1,25 +1,26 @@
-/// Basic HUD overlay: effect name, BPM, sensitivity, key hints.
-/// Renders as simple text in the top-left corner using glyphon.
+/// Modal centered text-input overlay for editing the DJ name live.
+/// Opened via the `T` key. Enter confirms, Escape cancels, Backspace pops.
 
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 
-pub struct HudOverlay {
+pub struct TextInputOverlay {
     font_system: FontSystem,
     swash_cache: SwashCache,
     atlas: TextAtlas,
     renderer: TextRenderer,
     viewport: Viewport,
     buffer: Buffer,
-    visible: bool,
+    font_size_px: f32,
+    cursor_t: f32,
 }
 
-impl HudOverlay {
+impl TextInputOverlay {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, surface_format: wgpu::TextureFormat) -> Self {
         let mut font_system = FontSystem::new();
-        let font_data = include_bytes!("../assets/fonts/RobotoCondensed-Bold.ttf");
+        let font_data = include_bytes!("../../assets/fonts/RobotoCondensed-Bold.ttf");
         font_system.db_mut().load_font_data(font_data.to_vec());
 
         let swash_cache = SwashCache::new();
@@ -28,10 +29,12 @@ impl HudOverlay {
         let mut atlas = TextAtlas::new(device, queue, &cache, surface_format);
         let renderer = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
 
-        let font_size = 18.0;
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(font_size, font_size * 1.4));
-        // Wide enough that the shortcuts line never wraps; bounds.right clips at render time.
-        buffer.set_size(&mut font_system, Some(3000.0), Some(200.0));
+        let font_size_px = 64.0;
+        let mut buffer = Buffer::new(
+            &mut font_system,
+            Metrics::new(font_size_px, font_size_px * 1.25),
+        );
+        buffer.set_size(&mut font_system, Some(4000.0), Some(200.0));
 
         Self {
             font_system,
@@ -40,27 +43,24 @@ impl HudOverlay {
             renderer,
             viewport,
             buffer,
-            visible: true,
+            font_size_px,
+            cursor_t: 0.0,
         }
     }
 
-    pub fn toggle(&mut self) {
-        self.visible = !self.visible;
+    /// Advance blinking cursor animation.
+    pub fn tick(&mut self, dt: f32) {
+        self.cursor_t = (self.cursor_t + dt) % 1.0;
     }
 
-    pub fn is_visible(&self) -> bool {
-        self.visible
-    }
-
-    pub fn update_text(&mut self, effect: &str, bpm: f32, sensitivity: f32, level: f32) {
-        let bar = level_bar(level);
-        let text = format!(
-            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Lvl: {}\nSPACE next  1-9 jump  +/- sens  P mirror  A device  T name  H hide  Q quit",
-            effect, bpm, sensitivity, bar
-        );
+    /// Update the text shown in the overlay. `buffer_text` is the current
+    /// in-progress DJ name edit buffer.
+    pub fn update_text(&mut self, buffer_text: &str) {
+        let cursor = if self.cursor_t < 0.5 { "_" } else { " " };
+        let shown = format!("DJ NAME:  {}{}\n[ENTER] save   [ESC] cancel   [BACKSPACE] erase", buffer_text, cursor);
         self.buffer.set_text(
             &mut self.font_system,
-            &text,
+            &shown,
             Attrs::new().family(Family::Name("Roboto Condensed")),
             Shaping::Basic,
         );
@@ -75,36 +75,45 @@ impl HudOverlay {
         target: &wgpu::TextureView,
         screen_size: (u32, u32),
     ) {
-        if !self.visible { return; }
-
         self.viewport.update(queue, Resolution {
             width: screen_size.0,
             height: screen_size.1,
         });
 
-        let margin = 20i32;
+        // Measure layout to center it horizontally and vertically.
+        let layout_width: f32 = self.buffer.layout_runs()
+            .map(|run| run.line_w)
+            .fold(0.0f32, f32::max);
+        let layout_height = self.font_size_px * 1.25 * 2.0;
+
+        let left = (screen_size.0 as f32 - layout_width) * 0.5;
+        let top  = (screen_size.1 as f32 - layout_height) * 0.5;
+
         let areas = [TextArea {
             buffer: &self.buffer,
-            left: margin as f32,
-            top: 12.0,
+            left,
+            top,
             scale: 1.0,
             bounds: TextBounds {
                 left: 0,
                 top: 0,
-                right: screen_size.0 as i32 - margin,
-                bottom: 150,
+                right: screen_size.0 as i32,
+                bottom: screen_size.1 as i32,
             },
-            default_color: Color::rgba(200, 200, 200, 200),
+            default_color: Color::rgba(255, 255, 255, 240),
             custom_glyphs: &[],
         }];
 
         self.renderer
-            .prepare(device, queue, &mut self.font_system, &mut self.atlas, &self.viewport, areas, &mut self.swash_cache)
-            .expect("HUD prepare failed");
+            .prepare(
+                device, queue, &mut self.font_system, &mut self.atlas,
+                &self.viewport, areas, &mut self.swash_cache,
+            )
+            .expect("TextInput prepare failed");
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("hud_pass"),
+                label: Some("text_input_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
@@ -119,17 +128,9 @@ impl HudOverlay {
             });
             self.renderer
                 .render(&self.atlas, &self.viewport, &mut pass)
-                .expect("HUD render failed");
+                .expect("TextInput render failed");
         }
 
         self.atlas.trim();
     }
-}
-
-/// 8-char ASCII level bar, e.g. "####----".
-/// Uses pure ASCII so any font renders it correctly (the bundled Roboto
-/// Condensed Bold does not include the Unicode block-drawing glyphs).
-fn level_bar(level: f32) -> String {
-    let filled = (level.clamp(0.0, 1.0) * 8.0).round() as usize;
-    "#".repeat(filled) + &"-".repeat(8 - filled)
 }

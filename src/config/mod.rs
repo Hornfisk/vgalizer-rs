@@ -56,6 +56,17 @@ pub fn write_audio_device(device_name: &str) -> std::io::Result<()> {
 }
 
 pub fn write_audio_device_to_path(path: &str, device_name: &str) -> std::io::Result<()> {
+    write_string_field_to_path(path, "audio_device", device_name)
+}
+
+/// Persist a new DJ name to the XDG config file, atomically.
+pub fn write_dj_name(dj_name: &str) -> std::io::Result<()> {
+    write_string_field_to_path(&dirs_config(), "dj_name", dj_name)
+}
+
+/// Generic helper: set a single top-level string field in the JSON config,
+/// preserving all other fields, atomic tmp→rename.
+fn write_string_field_to_path(path: &str, key: &str, value: &str) -> std::io::Result<()> {
     // Ensure parent directory exists
     if let Some(dir) = std::path::Path::new(path).parent() {
         std::fs::create_dir_all(dir)?;
@@ -67,7 +78,7 @@ pub fn write_audio_device_to_path(path: &str, device_name: &str) -> std::io::Res
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
 
-    json["audio_device"] = serde_json::Value::String(device_name.to_string());
+    json[key] = serde_json::Value::String(value.to_string());
 
     let pretty = serde_json::to_string_pretty(&json)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;

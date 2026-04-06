@@ -9,6 +9,16 @@ use rand::Rng;
 
 use crate::colors::Palette;
 
+/// Reference font size we rasterize glyphs at. The actual on-screen size
+/// is controlled per-frame via TextArea.scale so the name auto-fits to the
+/// current screen width.
+const REFERENCE_FONT_PX: f32 = 256.0;
+/// Side margin as a fraction of screen width (5% each side → 90% fit area).
+const SIDE_MARGIN_FRAC: f32 = 0.05;
+/// Max fraction of screen height the name may occupy (protects very short
+/// names from becoming absurdly tall).
+const MAX_HEIGHT_FRAC: f32 = 0.35;
+
 pub struct NameOverlay {
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -28,9 +38,9 @@ impl NameOverlay {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
-        screen_size: (u32, u32),
+        _screen_size: (u32, u32),
         name: &str,
-        font_size_frac: f32,
+        _font_size_frac: f32,
     ) -> Self {
         let mut font_system = FontSystem::new();
 
@@ -44,9 +54,15 @@ impl NameOverlay {
         let mut atlas = TextAtlas::new(device, queue, &cache, surface_format);
         let renderer = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
 
-        let font_size_px = (screen_size.1 as f32 * font_size_frac).max(24.0);
+        // Reference font size: we rasterize the glyphs at a large reference
+        // size, then scale them per-frame via TextArea.scale to fit the
+        // screen width with a small side margin. This keeps a single glyph
+        // cache regardless of screen/name, and auto-fits any name length.
+        let font_size_px = REFERENCE_FONT_PX;
         let mut buffer = Buffer::new(&mut font_system, Metrics::new(font_size_px, font_size_px));
-        buffer.set_size(&mut font_system, Some(screen_size.0 as f32), Some(screen_size.1 as f32));
+        // Give the buffer unlimited width so it never wraps — we always want
+        // the name on a single line and scale it to fit.
+        buffer.set_size(&mut font_system, None, Some(font_size_px * 2.0));
         buffer.set_text(&mut font_system, name, Attrs::new().family(Family::Name("Roboto Condensed")), Shaping::Basic);
         buffer.shape_until_scroll(&mut font_system, false);
 
@@ -68,6 +84,12 @@ impl NameOverlay {
     pub fn set_name(&mut self, name: &str) {
         if name != self.name {
             self.name = name.to_string();
+            // Reset buffer width to unbounded so long names stay on one line.
+            self.buffer.set_size(
+                &mut self.font_system,
+                None,
+                Some(self.font_size_px * 2.0),
+            );
             self.buffer.set_text(
                 &mut self.font_system,
                 name,
@@ -104,22 +126,36 @@ impl NameOverlay {
             height: screen_size.1,
         });
 
-        // Measure text layout to center it
+        // Measure the unscaled layout (in reference-font-px units).
         let layout_width: f32 = self.buffer.layout_runs()
             .map(|run| run.line_w)
-            .fold(0.0f32, f32::max);
-        let layout_height = self.font_size_px;
+            .fold(0.0f32, f32::max)
+            .max(1.0);
+
+        // Compute the scale that fits the name into the screen width with a
+        // small side margin. Clamp vertically so very short names don't
+        // explode into absurdly tall glyphs.
+        let target_w = screen_size.0 as f32 * (1.0 - 2.0 * SIDE_MARGIN_FRAC);
+        let max_h = screen_size.1 as f32 * MAX_HEIGHT_FRAC;
+        let width_fit  = target_w / layout_width;
+        let height_fit = max_h / self.font_size_px;
+        let fit_scale  = width_fit.min(height_fit);
+
+        // Beat/pulse breathing on top of the fit scale.
+        let base_scale = fit_scale * (1.0 + pulse * 0.04 + if beat { 0.04 } else { 0.0 });
+
+        let scaled_w = layout_width * base_scale;
+        let scaled_h = self.font_size_px * base_scale;
 
         let cx = screen_size.0 as f32 / 2.0;
         let cy = screen_size.1 as f32 * 0.62; // lower-center like Python
 
-        let base_scale = 1.0 + pulse * 0.07 + if beat { 0.06 } else { 0.0 };
-        let scaled_w = layout_width * base_scale;
-
         let left = cx - scaled_w / 2.0 + self.jitter_x;
-        let top  = cy - layout_height / 2.0 + self.jitter_y;
+        let top  = cy - scaled_h / 2.0 + self.jitter_y;
 
-        let ca_px = 6.0; // chromatic aberration pixel offset
+        // Chromatic aberration offset scales with the fit so it looks
+        // consistent across screen sizes / name lengths.
+        let ca_px = 6.0 * fit_scale.min(1.5);
 
         // We render 3 passes for chromatic aberration:
         // Red shifted left, blue shifted right, white center

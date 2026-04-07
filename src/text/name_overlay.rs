@@ -40,7 +40,6 @@ impl NameOverlay {
         surface_format: wgpu::TextureFormat,
         _screen_size: (u32, u32),
         name: &str,
-        _font_size_frac: f32,
     ) -> Self {
         let mut font_system = FontSystem::new();
 

@@ -169,47 +169,65 @@ impl Drop for SignalScanner {
 }
 
 fn run_scanner(device_names: Vec<String>, levels: Arc<Mutex<Vec<f32>>>, stop: Arc<AtomicBool>) {
+    use crate::audio::capture::with_stderr_silenced;
+
     let host = cpal::default_host();
 
-    // Build a map: device name → cpal Device
-    let device_map: std::collections::HashMap<String, cpal::Device> = match host.input_devices() {
-        Ok(it) => it
-            .filter_map(|d| d.name().ok().map(|n| (n, d)))
-            .collect(),
-        Err(_) => return,
-    };
+    // Build a map: device name → cpal Device. ALSA's lib-level chatter
+    // (dmix/dsnoop/oss complaints from unrelated plug devices) gets
+    // muted while we probe.
+    let device_map: std::collections::HashMap<String, cpal::Device> =
+        with_stderr_silenced(|| match host.input_devices() {
+            Ok(it) => it
+                .filter_map(|d| d.name().ok().map(|n| (n, d)))
+                .collect(),
+            Err(_) => std::collections::HashMap::new(),
+        });
+    if device_map.is_empty() {
+        return;
+    }
 
     // Open a stream for each named device; indexed to match picker list.
-    let _streams: Vec<Option<cpal::Stream>> = device_names
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let dev = device_map.get(name)?;
-            let config = dev.default_input_config().ok()?.into();
-            let lvls = levels.clone();
-            let stream = dev
-                .build_input_stream(
-                    &config,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        if data.is_empty() {
-                            return;
-                        }
-                        let rms =
-                            (data.iter().map(|x| x * x).sum::<f32>() / data.len() as f32).sqrt();
-                        if let Ok(mut v) = lvls.lock() {
-                            if i < v.len() {
-                                v[i] = v[i] * 0.85 + rms * 0.15;
+    // Skip PA:/pa:/PW:/pw: prefixed entries — they're not cpal devices
+    // and would always miss the device_map lookup.
+    let _streams: Vec<Option<cpal::Stream>> = with_stderr_silenced(|| {
+        device_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                if name.starts_with("PA:") || name.starts_with("pa:")
+                    || name.starts_with("PW:") || name.starts_with("pw:")
+                {
+                    return None;
+                }
+                let dev = device_map.get(name)?;
+                let config = dev.default_input_config().ok()?.into();
+                let lvls = levels.clone();
+                let stream = dev
+                    .build_input_stream(
+                        &config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            if data.is_empty() {
+                                return;
                             }
-                        }
-                    },
-                    |e| log::warn!("Scanner stream error: {}", e),
-                    None,
-                )
-                .ok()?;
-            stream.play().ok()?;
-            Some(stream)
-        })
-        .collect();
+                            let rms = (data.iter().map(|x| x * x).sum::<f32>()
+                                / data.len() as f32)
+                                .sqrt();
+                            if let Ok(mut v) = lvls.lock() {
+                                if i < v.len() {
+                                    v[i] = v[i] * 0.85 + rms * 0.15;
+                                }
+                            }
+                        },
+                        |e| log::warn!("Scanner stream error: {}", e),
+                        None,
+                    )
+                    .ok()?;
+                stream.play().ok()?;
+                Some(stream)
+            })
+            .collect()
+    });
 
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_millis(16));

@@ -38,6 +38,18 @@ log = "0.4"
 rand = "0.8"
 libc = "0.2"
 
+# TUI (vje binary only)
+ratatui = "0.29"
+crossterm = "0.28"
+
+[[bin]]
+name = "vgalizer"
+path = "src/main.rs"
+
+[[bin]]
+name = "vje"
+path = "src/bin/vje/main.rs"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

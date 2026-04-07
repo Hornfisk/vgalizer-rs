@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# One-liner installer for vgalizer.
-# Usage: curl -sSf https://raw.githubusercontent.com/Hornfisk/vgalizer-rs/master/install.sh | sh
+# One-liner install / update for vgalizer + vje.
+#
+#   curl -sSfL https://raw.githubusercontent.com/Hornfisk/vgalizer-rs/master/install.sh | bash
+#
+# Idempotent: first run installs, subsequent runs update to latest master.
+# Safe to re-run — rust is only installed if missing, system deps are
+# best-effort, shell aliases are guarded by a marker comment.
 
 set -e
 
@@ -21,9 +26,12 @@ elif command -v dnf &>/dev/null; then
     sudo dnf install -y alsa-lib-devel vulkan-loader 2>/dev/null || true
 fi
 
-# ---- Build & install ----
-echo "Building vgalizer (this takes a minute on first run)..."
-cargo install --git https://github.com/Hornfisk/vgalizer-rs vgalizer
+# ---- Build & install (or update) ----
+# --force makes this idempotent: first run installs, later runs update from
+# remote master if anything changed. --bins installs every binary in the
+# crate, so both `vgalizer` and `vje` end up in ~/.cargo/bin.
+echo "Building vgalizer + vje (this takes a minute on first run)..."
+cargo install --git https://github.com/Hornfisk/vgalizer-rs vgalizer --bins --force
 
 # ---- Add shell aliases (idempotent) ----
 add_aliases() {
@@ -37,6 +45,7 @@ add_aliases() {
 # >>> vgalizer-rs aliases >>>
 vgr()  { vgalizer ${1:+--name "$1"} "${@:2}"; }
 vgrw() { vgalizer --windowed ${1:+--name "$1"} "${@:2}"; }
+vje()  { command vje "$@"; }   # standalone TUI param editor
 # <<< vgalizer-rs aliases <<<
 EOF
         echo "Added aliases to $rc"
@@ -52,4 +61,5 @@ echo ""
 echo "  vgr                       → fullscreen with name from config"
 echo "  vgrname \"YOUR DJ NAME\"    → fullscreen with custom name"
 echo "  vgrw                      → windowed (for testing)"
+echo "  vje                       → live TUI param editor (runs alongside vgalizer)"
 echo "  vgalizer --list-audio     → see available audio devices"

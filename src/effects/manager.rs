@@ -198,4 +198,17 @@ impl SceneManager {
     pub fn set_scene_duration(&mut self, secs: f64) {
         self.scene_duration = secs.clamp(3.0, 300.0);
     }
+
+    /// Replace the mirror pool used by autopilot scene switches. The current
+    /// mirror keeps showing until the next switch, so changing the pool live
+    /// (e.g. via vje) doesn't yank what's on screen.
+    pub fn set_mirror_pool(&mut self, mirror_pool_strs: &[String]) {
+        let pool: Vec<MirrorMode> = mirror_pool_strs
+            .iter()
+            .map(|s| MirrorMode::from_str(s))
+            .collect();
+        if !pool.is_empty() {
+            self.mirror_pool = pool;
+        }
+    }
 }

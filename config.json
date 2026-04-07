@@ -2,7 +2,6 @@
   "audio_device": null,
   "beat_sensitivity": 1.4,
   "dj_name": "DJ NAME",
-  "enabled_effects": null,
   "fullscreen": true,
   "fx_params": {
     "cymatics": {
@@ -162,9 +161,7 @@
   "fx_speed_mult": 1.0,
   "glitch_intensity": 0.4,
   "global_rotation": 0.3,
-  "global_vib_division": "beat",
   "global_vibration": 0.5,
-  "kaleido_post_alpha": 140,
   "mirror_alpha": 160,
   "mirror_count": 6,
   "mirror_pool": [
@@ -176,15 +173,8 @@
     "kaleido"
   ],
   "mirror_spread": 8,
-  "name_font_size": 0.38,
   "scene_duration": 30.0,
-  "spectrum_anchor": "bottom",
-  "spectrum_color": "palette",
-  "spectrum_glow": 0.4,
-  "spectrum_height": 0.6,
-  "spectrum_n_bands": 32,
   "strobe_mode": "beat",
-  "target_fps": 60,
   "trail_alpha": 40,
   "vga_ca": 4,
   "vga_intensity": 0.3,

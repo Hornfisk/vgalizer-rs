@@ -7,7 +7,7 @@ pub use watcher::ConfigWatcher;
 use crate::cli::Cli;
 
 pub fn load(path: &str, cli: &Cli) -> Config {
-    let mut config = load_file(path);
+    let mut config = load_merged(path);
 
     // CLI overrides
     if let Some(name) = &cli.name {
@@ -28,7 +28,10 @@ pub fn load(path: &str, cli: &Cli) -> Config {
     config
 }
 
-fn load_file(path: &str) -> Config {
+/// Loads the config by merging the seed file at `path` with the user's
+/// XDG layer. Used at startup AND by the watcher on every reload, so
+/// external edits to either layer pick up identically.
+pub fn load_merged(path: &str) -> Config {
     // Base layer: user-supplied `-c` path, falling back to the embedded
     // default shipped in the repo. This provides the "shape" of the config
     // (visuals, audio defaults, mirror pool, etc.).

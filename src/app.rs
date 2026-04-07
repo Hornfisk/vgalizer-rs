@@ -154,6 +154,9 @@ impl ApplicationHandler for App {
         };
 
         let config_watcher = crate::config::ConfigWatcher::new(&self.config_path());
+        if config_watcher.is_none() {
+            log::warn!("ConfigWatcher: not attached — live reload disabled");
+        }
 
         let name_overlay = NameOverlay::new(
             &gpu.device,
@@ -161,7 +164,6 @@ impl ApplicationHandler for App {
             gpu.surface_format(),
             screen_size,
             &config.dj_name,
-            config.name_font_size,
         );
 
         let hud = HudOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
@@ -580,6 +582,20 @@ impl App {
                 if (new_cfg.beat_sensitivity - state.config.beat_sensitivity).abs() > 0.001 {
                     state.sensitivity = new_cfg.beat_sensitivity;
                     state.beat_tracker.set_sensitivity(state.sensitivity);
+                }
+                // Push owned-by-SceneManager fields to the scene before the
+                // config swap, since the scene caches them at construction.
+                if (new_cfg.scene_duration - state.config.scene_duration).abs() > 0.001 {
+                    log::info!("reload: scene_duration {} -> {}", state.config.scene_duration, new_cfg.scene_duration);
+                    state.scene.set_scene_duration(new_cfg.scene_duration);
+                }
+                if new_cfg.mirror_pool != state.config.mirror_pool {
+                    log::info!("reload: mirror_pool changed -> {:?}", new_cfg.mirror_pool);
+                    state.scene.set_mirror_pool(&new_cfg.mirror_pool);
+                }
+                if new_cfg.disabled_effects != state.config.disabled_effects {
+                    log::info!("reload: disabled_effects -> {:?}", new_cfg.disabled_effects);
+                    state.scene.set_disabled_filter(new_cfg.disabled_effects.as_deref());
                 }
                 let fx_changed = new_cfg.fx_params != state.config.fx_params;
                 state.config = new_cfg;

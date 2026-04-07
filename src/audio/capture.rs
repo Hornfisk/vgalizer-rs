@@ -94,10 +94,133 @@ pub fn list_input_devices_for_picker() -> Vec<(usize, String)> {
         .collect();
 
     let offset = result.len();
-    for (i, entry) in list_pa_monitor_sources().into_iter().enumerate() {
+    let pa = list_pa_monitor_sources();
+    let pa_was_empty = pa.is_empty();
+    for (i, entry) in pa.into_iter().enumerate() {
         result.push((offset + i, entry));
     }
+    // On systems without pipewire-pulse `pactl` returns nothing — fall
+    // back to native PipeWire enumeration so the picker still has useful
+    // entries. Avoid duplicating when both layers are present.
+    if pa_was_empty {
+        let offset = result.len();
+        for (i, entry) in list_pw_nodes().into_iter().enumerate() {
+            result.push((offset + i, entry));
+        }
+    }
     result
+}
+
+/// Returns the `node.name` of the first RUNNING Audio/Sink (preferred —
+/// pw-cat will record its monitor) or Audio/Source on the native PipeWire
+/// graph, queried via `pw-dump`. Used as a pulse-compat-free fallback for
+/// `first_running_pa_monitor` on systems without `pipewire-pulse`.
+fn first_running_pw_node() -> Option<String> {
+    let output = std::process::Command::new("pw-dump").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let arr = value.as_array()?;
+
+    let mut sink: Option<String> = None;
+    let mut source: Option<String> = None;
+    for obj in arr {
+        if obj.get("type").and_then(|t| t.as_str()) != Some("PipeWire:Interface:Node") {
+            continue;
+        }
+        let info = obj.get("info")?;
+        if info.get("state").and_then(|s| s.as_str()) != Some("running") {
+            continue;
+        }
+        let props = info.get("props")?;
+        let class = props.get("media.class").and_then(|v| v.as_str()).unwrap_or("");
+        let name = match props.get("node.name").and_then(|v| v.as_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if class == "Audio/Sink" && sink.is_none() {
+            sink = Some(name);
+        } else if class == "Audio/Source" && source.is_none() {
+            source = Some(name);
+        }
+    }
+    sink.or(source)
+}
+
+/// Lists Audio/Sink and Audio/Source nodes via `pw-dump`. Each entry is
+/// returned with a `PW:` prefix for RUNNING nodes and `pw:` for others,
+/// mirroring the `PA:`/`pa:` convention. Used by the picker on systems
+/// without `pipewire-pulse` (where `pactl` is unavailable).
+fn list_pw_nodes() -> Vec<String> {
+    let output = match std::process::Command::new("pw-dump").output() {
+        Ok(o) if o.status.success() => o,
+        _ => return vec![],
+    };
+    let value: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let arr = match value.as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
+    let mut out = Vec::new();
+    for obj in arr {
+        if obj.get("type").and_then(|t| t.as_str()) != Some("PipeWire:Interface:Node") {
+            continue;
+        }
+        let info = match obj.get("info") {
+            Some(i) => i,
+            None => continue,
+        };
+        let state = info.get("state").and_then(|s| s.as_str()).unwrap_or("");
+        let props = match info.get("props") {
+            Some(p) => p,
+            None => continue,
+        };
+        let class = props.get("media.class").and_then(|v| v.as_str()).unwrap_or("");
+        if class != "Audio/Sink" && class != "Audio/Source" {
+            continue;
+        }
+        let name = match props.get("node.name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let prefix = if state == "running" { "PW" } else { "pw" };
+        out.push(format!("{}:{}", prefix, name));
+    }
+    out
+}
+
+/// Returns the name of the first RUNNING PulseAudio/PipeWire monitor source,
+/// if any. Used to auto-route "default" capture to whatever is currently
+/// playing audio (e.g. the DJ controller's output monitor) instead of
+/// whatever cpal's ALSA default resolves to.
+fn first_running_pa_monitor() -> Option<String> {
+    let output = std::process::Command::new("pactl")
+        .args(["list", "short", "sources"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| {
+            let mut cols = line.splitn(5, '\t');
+            let _idx = cols.next()?;
+            let name = cols.next()?;
+            if !name.contains(".monitor") {
+                return None;
+            }
+            let state = cols.nth(2)?.trim();
+            if state == "RUNNING" {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
 }
 
 /// Queries `pactl list short sources` and returns monitor sources.
@@ -142,10 +265,34 @@ pub fn start_capture(
     device_name: Option<&str>,
     audio_state: Arc<AtomicAudioState>,
 ) -> Result<AudioStreamHandle, String> {
-    // PA monitor sources go through parec, not cpal.
+    // Explicit PA monitor sources go through parec (pulse-compat path).
     if let Some(name) = device_name {
         if let Some(pa_src) = name.strip_prefix("PA:").or_else(|| name.strip_prefix("pa:")) {
             return start_parec_capture(pa_src, audio_state);
+        }
+        // Explicit native-PipeWire nodes go through pw-cat.
+        if let Some(pw_node) = name.strip_prefix("PW:").or_else(|| name.strip_prefix("pw:")) {
+            return start_pw_cat_capture(pw_node, audio_state);
+        }
+    }
+
+    // When no device is specified or the user saved "default", the cpal
+    // ALSA default rarely lands on anything useful under pipewire-alsa —
+    // it usually opens a mic or a silent loopback. Prefer whatever sink
+    // monitor / source is currently RUNNING (e.g. the DJ controller
+    // playback), so the visualizer reacts out-of-the-box.
+    //
+    // Try the pulse-compat path first (parec/pactl), then fall back to
+    // native PipeWire (pw-cat/pw-dump) for systems without pipewire-pulse.
+    let is_default = device_name.map_or(true, |n| n.eq_ignore_ascii_case("default"));
+    if is_default {
+        if let Some(src) = first_running_pa_monitor() {
+            log::info!("Auto-selected running PA monitor source: {}", src);
+            return start_parec_capture(&src, audio_state);
+        }
+        if let Some(node) = first_running_pw_node() {
+            log::info!("Auto-selected running PipeWire node: {}", node);
+            return start_pw_cat_capture(&node, audio_state);
         }
     }
 
@@ -199,26 +346,64 @@ pub fn start_capture(
 }
 
 /// Spawns `parec --device=<source>` and feeds its stdout into the analyzer.
-/// This bypasses the ALSA layer entirely and speaks directly to
-/// PipeWire's PulseAudio compatibility layer.
+/// Routes through PipeWire's PulseAudio compatibility layer (`pipewire-pulse`).
 fn start_parec_capture(
     source: &str,
     audio_state: Arc<AtomicAudioState>,
 ) -> Result<AudioStreamHandle, String> {
-    let mut child = std::process::Command::new("parec")
-        .args([
-            "--device",
-            source,
-            "--format=float32le",
-            "--channels=2",
-            "--rate=44100",
-            "--latency-msec=100",
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+    let mut cmd = std::process::Command::new("parec");
+    cmd.args([
+        "--device",
+        source,
+        "--format=float32le",
+        "--channels=2",
+        "--rate=44100",
+        "--latency-msec=100",
+    ]);
+    let handle = spawn_subprocess_capture(cmd, audio_state)
         .map_err(|e| format!("parec not available: {}. Install pulseaudio-utils.", e))?;
+    log::info!("Started parec capture from '{}'", source);
+    Ok(handle)
+}
 
+/// Spawns `pw-cat --record --target=<node>` and feeds its raw f32 stdout
+/// into the analyzer. Native PipeWire path — works on systems without
+/// `pipewire-pulse` (no parec/pactl), since `pw-cat` ships with the base
+/// `pipewire` package. When `target` names an Audio/Sink node, pw-cat
+/// records that sink's monitor; for an Audio/Source node it records the
+/// source directly.
+fn start_pw_cat_capture(
+    target: &str,
+    audio_state: Arc<AtomicAudioState>,
+) -> Result<AudioStreamHandle, String> {
+    let mut cmd = std::process::Command::new("pw-cat");
+    cmd.args([
+        "--record",
+        &format!("--target={}", target),
+        "--format=f32",
+        "--rate=44100",
+        "--channels=2",
+        "--latency=100ms",
+        "--raw",
+        "-",
+    ]);
+    let handle = spawn_subprocess_capture(cmd, audio_state)
+        .map_err(|e| format!("pw-cat not available: {}. Install pipewire.", e))?;
+    log::info!("Started pw-cat capture from '{}'", target);
+    Ok(handle)
+}
+
+/// Spawns a subprocess that writes raw little-endian f32 stereo samples
+/// to its stdout, and starts a reader thread that pumps the bytes into
+/// `AudioAnalyzer` and the shared `AtomicAudioState`. Used by both the
+/// `parec` (PA-compat) and `pw-cat` (native PipeWire) capture paths.
+fn spawn_subprocess_capture(
+    mut cmd: std::process::Command,
+    audio_state: Arc<AtomicAudioState>,
+) -> std::io::Result<AudioStreamHandle> {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().unwrap(); // safe: piped above
 
     let thread = std::thread::spawn(move || {
@@ -232,7 +417,7 @@ fn start_parec_capture(
             let mut filled = 0;
             while filled < buf.len() {
                 match reader.read(&mut buf[filled..]) {
-                    Ok(0) => return, // parec exited / EOF
+                    Ok(0) => return, // child exited / EOF
                     Ok(n) => filled += n,
                     Err(_) => return,
                 }
@@ -247,7 +432,6 @@ fn start_parec_capture(
         }
     });
 
-    log::info!("Started parec capture from '{}'", source);
     Ok(AudioStreamHandle::Pa(PaCapture {
         child,
         _thread: thread,

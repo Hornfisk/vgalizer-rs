@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>laser_burst</title>
+<!--
+  laser_burst · Central horizontal spectrum strip + radial laser rays.
+  Berlin rave laser-show vibe. Each band drives both a vertical bar in
+  the central strip and a thin radial ray that shoots to screen edge.
+
+  Planned in-engine params (param 0..5):
+    0  ray_count    8..96         48     number of radial rays
+    1  ray_thick    0.001..0.020  0.0035 angular thickness of each ray
+    2  strip_height 0.05..0.50    0.22   amplitude of central spectrum bar
+    3  decay        0.5..6.0      2.5    radial brightness falloff
+    4  spin_rate    -1.0..1.0     0.06   rotation speed of the ray fan
+    5  hue_shift    0.0..1.0      0.30   tint between green / cyan / magenta
+-->
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; font-family: ui-monospace, Menlo, monospace; color:#9ad; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    opacity: 0.85; transition: opacity 1.2s ease;
+    text-shadow: 0 0 6px #000;
+    pointer-events: none;
+  }
+  #hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">laser_burst &middot; click / space = beat</div>
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
+if (!gl) {
+  document.body.textContent = 'WebGL2 not available.';
+  throw new Error('no webgl2');
+}
+
+const VS = `#version 300 es
+in vec2 a_pos;
+void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+
+const FS = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_level;
+uniform float u_beat;
+uniform float u_pulse;
+uniform float u_bands[8];
+
+#define PI 3.14159265359
+#define TAU 6.28318530718
+#define NRAYS 48
+
+void main(){
+  vec2 res = u_res;
+  vec2 p = (gl_FragCoord.xy - 0.5*res) / min(res.x, res.y);
+
+  float r = length(p);
+  float ang = atan(p.y, p.x);
+
+  vec3 col = vec3(0.0);
+
+  // ===== Central horizontal spectrum strip =====
+  // Span ±0.7 horizontally, 16 bars (mirror 8 bands), height 0.0..stripH.
+  float stripH  = 0.22;
+  float stripW  = 0.7;
+  float ax = abs(p.x);
+  if (ax < stripW && abs(p.y) < stripH * 1.2) {
+    float bx = ax / stripW * 8.0;     // 0..8
+    int bi = int(floor(bx));
+    if (bi < 8) {
+      float h = u_bands[bi] * stripH * (0.6 + 0.6 * u_pulse);
+      // bar inset
+      float local = fract(bx);                   // 0..1 across the bar
+      float xEdge = abs(local - 0.5) * 2.0;      // 0 centre, 1 edge
+      float xMask = 1.0 - smoothstep(0.65, 0.95, xEdge);
+      // vertical envelope inside bar
+      float yMask = 1.0 - smoothstep(h * 0.85, h * 1.05, abs(p.y));
+      float coreLine = exp(-abs(p.y) * 35.0);    // bright spine
+      vec3 stripCol = vec3(0.55, 1.0, 0.55);
+      col += stripCol * (yMask * xMask * 1.4 + coreLine * 0.8);
+    }
+  }
+
+  // ===== Radial laser rays =====
+  // 48 rays, evenly spaced + slow drift. Brightness from band assigned by ray index.
+  float spin = u_time * 0.06;
+  float rayThick = 0.0035;
+  for (int i = 0; i < NRAYS; ++i) {
+    float a0 = (float(i) / float(NRAYS)) * TAU + spin + (float(i & 1) * 0.04);
+    int bidx = i % 8;
+    float bandV = u_bands[bidx];
+    if (bandV < 0.04) continue;
+
+    float dAng = ang - a0;
+    dAng = atan(sin(dAng), cos(dAng));   // wrap to [-π, π]
+
+    float thick = rayThick * (1.0 + bandV * 1.5);
+    float w = exp(-(dAng*dAng) / (thick*thick));
+
+    // Length attenuation: rays start strong near centre, taper outward
+    float len = exp(-r * (2.5 - bandV * 1.6));
+
+    // Slight per-ray flicker
+    float flick = 0.85 + 0.15 * sin(u_time * 17.0 + float(i));
+
+    // Colour: green dominant, mids/highs lean cyan
+    vec3 rayCol = mix(vec3(0.20, 1.00, 0.30), vec3(0.10, 0.85, 1.00), float(bidx) / 7.0);
+    col += rayCol * w * len * flick * (0.4 + bandV * 1.6);
+  }
+
+  // ===== Central glow + beat flash =====
+  float glow = exp(-r * 6.0);
+  col += vec3(0.20, 1.00, 0.35) * glow * (0.25 + 0.6 * u_pulse);
+
+  // Beat-driven outward shockwave ring
+  float ringR = 0.05 + (1.0 - exp(-(u_time - 0.0) * 0.0)) * 0.0; // unused placeholder
+  // Use last-beat phase via pulse: thicker ring at high pulse, fades with r
+  float ringD = abs(r - (0.15 + (1.0 - u_pulse) * 0.6));
+  float ringW = exp(-ringD * ringD * 600.0) * u_pulse * 0.7;
+  col += vec3(0.6, 1.0, 0.7) * ringW;
+
+  // Vignette
+  col *= smoothstep(1.4, 0.2, r);
+
+  // Tone
+  col = 1.0 - exp(-col * 1.4);
+  col = pow(col, vec3(0.92));
+  fragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.bindAttribLocation(prog, 0, 'a_pos');
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  console.error(gl.getProgramInfoLog(prog));
+  throw new Error('link failed');
+}
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const u_res    = gl.getUniformLocation(prog, 'u_res');
+const u_time   = gl.getUniformLocation(prog, 'u_time');
+const u_level  = gl.getUniformLocation(prog, 'u_level');
+const u_beat   = gl.getUniformLocation(prog, 'u_beat');
+const u_pulse  = gl.getUniformLocation(prog, 'u_pulse');
+const u_bands  = gl.getUniformLocation(prog, 'u_bands[0]');
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(window.innerWidth * dpr);
+  const h = Math.floor(window.innerHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+let pulse = 0;
+let lastBeatT = 0;
+function triggerBeat(t) {
+  pulse = 1.0;
+  lastBeatT = t;
+}
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); triggerBeat(performance.now()*0.001); }
+});
+window.addEventListener('mousedown', () => triggerBeat(performance.now()*0.001));
+window.addEventListener('touchstart', () => triggerBeat(performance.now()*0.001), {passive:true});
+
+const hint = document.getElementById('hint');
+setTimeout(() => hint.classList.add('gone'), 3000);
+
+const start = performance.now();
+let prev = start;
+let nextAutoBeat = 0;
+const BPM = 130;
+const beatInterval = 60.0 / BPM;
+
+function frame(now) {
+  const t = (now - start) * 0.001;
+  const dt = (now - prev) * 0.001;
+  prev = now;
+
+  let level = 0.5 + 0.4*Math.sin(t*0.7) + 0.1*Math.sin(t*3.1);
+  level = Math.max(0, Math.min(1, level));
+
+  if (t >= nextAutoBeat) {
+    triggerBeat(t);
+    nextAutoBeat = (nextAutoBeat === 0 ? t : nextAutoBeat) + beatInterval;
+    if (nextAutoBeat < t) nextAutoBeat = t + beatInterval;
+  }
+  const decayPerSec = Math.pow(0.90, 60);
+  pulse *= Math.pow(decayPerSec, dt);
+
+  const bands = new Float32Array(8);
+  for (let i=0;i<8;i++){
+    let v = 0.4 + 0.5*Math.sin(t*(i+1)*0.9 + i*1.3);
+    v *= 0.5 + 0.6*Math.max(0, Math.sin(t*1.7 + i*0.6));
+    bands[i] = Math.max(0, Math.min(1, v));
+  }
+
+  resize();
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.useProgram(prog);
+  gl.uniform2f(u_res, canvas.width, canvas.height);
+  gl.uniform1f(u_time, t);
+  gl.uniform1f(u_level, level);
+  gl.uniform1f(u_beat, (t - lastBeatT) < 0.02 ? 1.0 : 0.0);
+  gl.uniform1f(u_pulse, pulse);
+  gl.uniform1fv(u_bands, bands);
+
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

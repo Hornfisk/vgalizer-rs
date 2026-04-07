@@ -148,10 +148,14 @@ impl NameOverlay {
         let scaled_h = self.font_size_px * base_scale;
 
         let cx = screen_size.0 as f32 / 2.0;
-        let cy = screen_size.1 as f32 * 0.62; // lower-center like Python
+        let cy = screen_size.1 as f32 * 0.5;
 
+        // Glyphon positions `top` at the top of the font line box. For an
+        // all-caps DJ name, the visual cap center sits at ~0.42 of the line
+        // box (cap-height ~0.71 em, baseline ~0.78 em), not 0.5. Offset so
+        // the cap center lands exactly on cy.
         let left = cx - scaled_w / 2.0 + self.jitter_x;
-        let top  = cy - scaled_h / 2.0 + self.jitter_y;
+        let top  = cy - scaled_h * 0.42 + self.jitter_y;
 
         // Chromatic aberration offset scales with the fit so it looks
         // consistent across screen sizes / name lengths.

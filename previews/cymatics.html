@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cymatics</title>
+<!--
+  cymatics · Chladni nodal lines: zero crossings of
+    f(x,y) = cos(m·π·x)·cos(n·π·y) - cos(n·π·x)·cos(m·π·y)
+  with integer (m,n) chosen from a hashed table that swaps on every beat.
+  The (m,n) pair smoothly interpolates so the figure morphs between modes.
+  White nodal pattern, palette tint on bloom. Vibrating sand on a steel
+  plate, audio drives the modes.
+
+  Planned in-engine params (param 0..5):
+    0  morph_speed   0.5..6.0    2.0   how fast (m,n) interpolates between modes
+    1  thickness     0.5..3.0    1.4   nodal line width
+    2  bloom         0.0..1.0    0.45  glow intensity around nodes
+    3  hue           0.0..1.0    0.55  bloom tint cyan / magenta / amber
+    4  bg_grain      0.0..0.30   0.08  faint grain in fill area
+    5  symmetry      0..1        1     0 = pure Chladni, 1 = symmetrised
+-->
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; font-family: ui-monospace, Menlo, monospace; color:#9ad; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    opacity: 0.85; transition: opacity 1.2s ease;
+    text-shadow: 0 0 6px #000;
+    pointer-events: none;
+  }
+  #hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">cymatics &middot; click / space = beat</div>
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
+if (!gl) { document.body.textContent = 'WebGL2 not available.'; throw new Error('no webgl2'); }
+
+const VS = `#version 300 es
+in vec2 a_pos;
+void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+
+const FS = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_pulse;
+uniform float u_mn;     // current m,n interpolated as floats
+uniform float u_mn2;
+uniform float u_bands[8];
+
+#define PI 3.14159265359
+
+float chladni(vec2 p, float m, float n) {
+  return cos(m * PI * p.x) * cos(n * PI * p.y)
+       - cos(n * PI * p.x) * cos(m * PI * p.y);
+}
+
+void main(){
+  vec2 res = u_res;
+  // Square plate centred on screen, mapped to [-1, 1]
+  vec2 p = (gl_FragCoord.xy - 0.5 * res) / min(res.x, res.y) * 1.6;
+
+  float m = u_mn;
+  float n = u_mn2;
+
+  // The plate vibrates: a slow time wobble on m,n simulates the plate
+  // settling into mode shapes. Bands give bursts of higher modes.
+  float wob = 0.15 * sin(u_time * 1.1) + 0.1 * u_bands[2];
+  float v = chladni(p, m + wob, n - wob * 0.5);
+
+  // Use fwidth on v to get a stable thin nodal line where v ≈ 0
+  float fw = fwidth(v) + 1e-5;
+  float nodalW = 1.0 - smoothstep(0.0, fw * 1.6, abs(v));
+
+  // Soft glow around nodes
+  float glow = exp(-v*v * 0.6) * 0.35;
+
+  // Tint shifts slowly + lifts on beat
+  vec3 cyan = vec3(0.30, 0.95, 1.00);
+  vec3 mag  = vec3(1.00, 0.30, 0.85);
+  float ph = 0.5 + 0.5 * sin(u_time * 0.13);
+  vec3 tint = mix(cyan, mag, ph);
+
+  vec3 col = vec3(nodalW);                  // crisp white nodes
+  col += tint * glow * (0.6 + 0.6 * u_pulse);
+
+  // Slight grain in the antinodes for "vibrating sand" feel
+  float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)) + u_time*0.5) * 43758.5453);
+  col += vec3(grain * 0.05) * (1.0 - nodalW);
+
+  // Beat radial flash
+  float r = length(p);
+  col += tint * u_pulse * 0.18 * exp(-r * 1.4);
+
+  // Plate vignette: darken anything outside ~|p|>1.5 to suggest the steel plate edge
+  float plate = smoothstep(1.55, 1.30, max(abs(p.x), abs(p.y)));
+  col *= plate;
+
+  col = 1.0 - exp(-col * 1.5);
+  col = pow(col, vec3(0.92));
+  fragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.bindAttribLocation(prog, 0, 'a_pos');
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  console.error(gl.getProgramInfoLog(prog));
+  throw new Error('link failed');
+}
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const u_res    = gl.getUniformLocation(prog, 'u_res');
+const u_time   = gl.getUniformLocation(prog, 'u_time');
+const u_pulse  = gl.getUniformLocation(prog, 'u_pulse');
+const u_mn     = gl.getUniformLocation(prog, 'u_mn');
+const u_mn2    = gl.getUniformLocation(prog, 'u_mn2');
+const u_bands  = gl.getUniformLocation(prog, 'u_bands[0]');
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(window.innerWidth * dpr);
+  const h = Math.floor(window.innerHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+let pulse = 0;
+function triggerBeat() { pulse = 1.0; }
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); triggerBeat(); }
+});
+window.addEventListener('mousedown', () => triggerBeat());
+window.addEventListener('touchstart', () => triggerBeat(), {passive:true});
+
+const hint = document.getElementById('hint');
+setTimeout(() => hint.classList.add('gone'), 3000);
+
+// Mode table — pleasing (m,n) pairs with distinct nodal patterns
+const modes = [
+  [3, 2], [4, 3], [5, 2], [5, 4], [6, 3], [6, 5],
+  [7, 2], [7, 4], [8, 3], [8, 5], [9, 4], [10, 7],
+];
+let curIdx = 0;
+let nextIdx = 1;
+let morph = 0; // 0..1 between cur and next
+let m = modes[0][0], n = modes[0][1];
+
+const start = performance.now();
+let prev = start;
+let nextAutoBeat = 0;
+const BPM = 124;
+const beatInterval = 60.0 / BPM;
+let beatCount = 0;
+
+function frame(now) {
+  const t = (now - start) * 0.001;
+  const dt = (now - prev) * 0.001;
+  prev = now;
+
+  if (t >= nextAutoBeat) {
+    triggerBeat();
+    beatCount++;
+    if (beatCount % 2 === 0) {
+      curIdx = nextIdx;
+      nextIdx = (nextIdx + 1 + Math.floor(Math.random() * (modes.length - 1))) % modes.length;
+      morph = 0;
+    }
+    nextAutoBeat = (nextAutoBeat === 0 ? t : nextAutoBeat) + beatInterval;
+    if (nextAutoBeat < t) nextAutoBeat = t + beatInterval;
+  }
+  const decayPerSec = Math.pow(0.92, 60);
+  pulse *= Math.pow(decayPerSec, dt);
+
+  morph = Math.min(1, morph + dt * 1.5);
+  const k = morph * morph * (3 - 2 * morph); // smoothstep
+  m = modes[curIdx][0] * (1 - k) + modes[nextIdx][0] * k;
+  n = modes[curIdx][1] * (1 - k) + modes[nextIdx][1] * k;
+
+  const bands = new Float32Array(8);
+  for (let i=0;i<8;i++){
+    let v = 0.5 + 0.5*Math.sin(t*(i+1)*0.9 + i*1.3);
+    v *= 0.5 + 0.7*Math.max(0, Math.sin(t*2.0 + i*0.5));
+    v += pulse * 0.4 * (0.6 + 0.4*Math.sin(i*1.1));
+    bands[i] = Math.max(0, Math.min(1, v));
+  }
+
+  resize();
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.useProgram(prog);
+  gl.uniform2f(u_res, canvas.width, canvas.height);
+  gl.uniform1f(u_time, t);
+  gl.uniform1f(u_pulse, pulse);
+  gl.uniform1f(u_mn, m);
+  gl.uniform1f(u_mn2, n);
+  gl.uniform1fv(u_bands, bands);
+
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

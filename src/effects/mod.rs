@@ -1,4 +1,5 @@
 pub mod manager;
+pub mod params;
 
 use std::collections::HashMap;
 use crate::gpu::{pipeline, EffectUniforms, GlobalUniforms};
@@ -20,6 +21,19 @@ pub const EFFECT_NAMES: &[&str] = &[
     "strange_attractor",
     "wire_tunnel",
     "voronoi_pulse",
+    // v3 additions (vector / scope / cymatics set)
+    "vector_terrain",
+    "laser_burst",
+    "scope_xy",
+    "wave_dunes",
+    "radial_eq",
+    "harmonograph",
+    "tv_acid",
+    "kaleido_warp",
+    "isoline_field",
+    "moebius_grid",
+    "cymatics",
+    "vector_rabbit",
 ];
 
 // Shader sources embedded at compile time.
@@ -49,6 +63,19 @@ fn effect_source(name: &str) -> &'static str {
         "strange_attractor" => effect_src!("strange_attractor"),
         "wire_tunnel" => effect_src!("wire_tunnel"),
         "voronoi_pulse" => effect_src!("voronoi_pulse"),
+        // v3 additions
+        "vector_terrain" => effect_src!("vector_terrain"),
+        "laser_burst" => effect_src!("laser_burst"),
+        "scope_xy" => effect_src!("scope_xy"),
+        "wave_dunes" => effect_src!("wave_dunes"),
+        "radial_eq" => effect_src!("radial_eq"),
+        "harmonograph" => effect_src!("harmonograph"),
+        "tv_acid" => effect_src!("tv_acid"),
+        "kaleido_warp" => effect_src!("kaleido_warp"),
+        "isoline_field" => effect_src!("isoline_field"),
+        "moebius_grid" => effect_src!("moebius_grid"),
+        "cymatics" => effect_src!("cymatics"),
+        "vector_rabbit" => effect_src!("vector_rabbit"),
         _ => panic!("Unknown effect: {}", name),
     }
 }
@@ -63,6 +90,9 @@ pub struct EffectRegistry {
     pipelines: HashMap<String, wgpu::RenderPipeline>,
     effect_buffers: HashMap<String, wgpu::Buffer>,
     effect_bind_groups: HashMap<String, wgpu::BindGroup>,
+    /// CPU-side mirror of the params currently uploaded for each effect.
+    /// Lets the param editor seed itself with the live values.
+    effect_params_cache: HashMap<String, EffectUniforms>,
 }
 
 impl EffectRegistry {
@@ -127,6 +157,7 @@ impl EffectRegistry {
         let mut pipelines = HashMap::new();
         let mut effect_buffers = HashMap::new();
         let mut effect_bind_groups = HashMap::new();
+        let mut effect_params_cache = HashMap::new();
 
         for name in &names {
             let frag_src = format!("{}\n{}", GLOBALS_SRC, effect_source(name));
@@ -163,6 +194,7 @@ impl EffectRegistry {
             pipelines.insert(name.to_string(), pipeline);
             effect_buffers.insert(name.to_string(), buf);
             effect_bind_groups.insert(name.to_string(), bind_group);
+            effect_params_cache.insert(name.to_string(), effect_uniforms);
         }
 
         Self {
@@ -173,7 +205,13 @@ impl EffectRegistry {
             pipelines,
             effect_buffers,
             effect_bind_groups,
+            effect_params_cache,
         }
+    }
+
+    /// Read the CPU-side copy of an effect's current params (for the editor).
+    pub fn current_params(&self, name: &str) -> Option<&EffectUniforms> {
+        self.effect_params_cache.get(name)
     }
 
     pub fn global_bind_group(&self, device: &wgpu::Device) -> wgpu::BindGroup {
@@ -196,7 +234,7 @@ impl EffectRegistry {
     }
 
     pub fn update_effect_params(
-        &self,
+        &mut self,
         queue: &wgpu::Queue,
         name: &str,
         params: &EffectUniforms,
@@ -204,6 +242,7 @@ impl EffectRegistry {
         if let Some(buf) = self.effect_buffers.get(name) {
             queue.write_buffer(buf, 0, bytemuck::bytes_of(params));
         }
+        self.effect_params_cache.insert(name.to_string(), *params);
     }
 
     pub fn render_effect(

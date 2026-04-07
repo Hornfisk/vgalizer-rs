@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tv_acid</title>
+<!--
+  tv_acid · CRT calibration test pattern (SMPTE colour bars + grayscale strip
+  + crosshatch) overlaid with a melting acid-yellow smiley in the centre.
+  Constant CRT scanlines, chromatic aberration, occasional glitch tears
+  (horizontal slices shifted on beat), and a faint vignette. The smiley sags
+  vertically with a sin wobble and gets sliced by the same glitches.
+
+  Planned in-engine params (param 0..5):
+    0  bar_height    0.30..0.80   0.55  fraction of screen used by colour bars
+    1  smiley_size   0.10..0.40   0.22  smiley radius
+    2  melt_amount   0.00..0.30   0.12  vertical sag of smiley features
+    3  glitch_rate   0.0..3.0     1.2   how often glitch tears fire
+    4  scanline_str  0.0..0.6     0.30  scanline darkness
+    5  chroma_shift  0.0..0.01    0.003 RGB channel offset
+-->
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; font-family: ui-monospace, Menlo, monospace; color:#9ad; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    opacity: 0.85; transition: opacity 1.2s ease;
+    text-shadow: 0 0 6px #000;
+    pointer-events: none;
+  }
+  #hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">tv_acid &middot; click / space = beat</div>
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
+if (!gl) { document.body.textContent = 'WebGL2 not available.'; throw new Error('no webgl2'); }
+
+const VS = `#version 300 es
+in vec2 a_pos;
+void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+
+const FS = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_level;
+uniform float u_pulse;
+uniform float u_bands[8];
+
+#define PI 3.14159265359
+
+float hash(float n){ return fract(sin(n) * 43758.5453123); }
+float hash2(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+
+// SMPTE-ish bars: 7 colours top-to-bottom of the strip
+vec3 smpteBar(float u){
+  // u in [0,1] across the screen horizontally
+  int idx = int(floor(u * 7.0));
+  if (idx == 0) return vec3(0.75, 0.75, 0.75);
+  if (idx == 1) return vec3(0.75, 0.75, 0.00);
+  if (idx == 2) return vec3(0.00, 0.75, 0.75);
+  if (idx == 3) return vec3(0.00, 0.75, 0.00);
+  if (idx == 4) return vec3(0.75, 0.00, 0.75);
+  if (idx == 5) return vec3(0.75, 0.00, 0.00);
+  return vec3(0.00, 0.00, 0.75);
+}
+
+// Pluge / grayscale row
+vec3 grayRow(float u){
+  float g = floor(u * 8.0) / 7.0;
+  return vec3(g);
+}
+
+// Looks up the test pattern colour at uv (no smiley/glitches yet).
+vec3 testPattern(vec2 uv){
+  // uv: 0..1 with origin top-left for ease
+  float y = 1.0 - uv.y;
+  vec3 c;
+  if (y < 0.55) {
+    // Main colour bars
+    c = smpteBar(uv.x);
+  } else if (y < 0.66) {
+    // Reverse blue/black/magenta strip
+    int i = int(floor(uv.x * 7.0));
+    if      (i == 0) c = vec3(0.0, 0.0, 0.75);
+    else if (i == 1) c = vec3(0.05);
+    else if (i == 2) c = vec3(0.75, 0.0, 0.75);
+    else if (i == 3) c = vec3(0.05);
+    else if (i == 4) c = vec3(0.0, 0.75, 0.75);
+    else if (i == 5) c = vec3(0.05);
+    else             c = vec3(0.75);
+  } else {
+    // Grayscale + black squares
+    c = grayRow(uv.x);
+    if (uv.x > 0.50 && uv.x < 0.62) c = vec3(0.0);
+    if (uv.x > 0.78 && uv.x < 0.86) c = vec3(0.02);
+  }
+  // Hatching grid overlay
+  vec2 g = fract(uv * vec2(32.0, 18.0));
+  float hatch = step(0.96, g.x) + step(0.96, g.y);
+  c = mix(c, vec3(0.0), clamp(hatch, 0.0, 1.0) * 0.35);
+  return c;
+}
+
+// Smiley: returns coverage [0,1] and tint colour for a circle centred at (cx, cy)
+// with radius r. Includes eyes and mouth. Melts vertically with melt amount.
+float smileyMask(vec2 p, float r, float melt) {
+  // p in screen-uv centred coords
+  // Apply vertical sag: features below mid get pulled down
+  float dropFace = sin(p.x * 4.0) * 0.02 * melt;
+  vec2 fp = vec2(p.x, p.y - dropFace);
+  float face = length(fp) - r;
+
+  // Eyes (drift down on melt)
+  float eyeDrop = melt * 0.05;
+  vec2 leye = fp - vec2(-0.32, 0.30) * r + vec2(0.0, eyeDrop);
+  vec2 reye = fp - vec2( 0.32, 0.30) * r + vec2(0.0, eyeDrop);
+  float lE = length(leye) - r * 0.10;
+  float rE = length(reye) - r * 0.10;
+
+  // Mouth: arc from -0.5 to 0.5 angle of an offset circle, drop heavier
+  float mouthDrop = melt * 0.10;
+  vec2 mp = fp - vec2(0.0, -0.18 * r) + vec2(0.0, mouthDrop);
+  float mr = r * 0.55;
+  float mc = abs(length(mp) - mr) - r * 0.05;
+  // Only draw bottom half (mp.y < 0)
+  if (mp.y > 0.0) mc = 1.0;
+
+  // Combine: face filled, eyes/mouth subtracted
+  // Return alpha-style coverage
+  float aa = 0.004;
+  float faceA = 1.0 - smoothstep(-aa, aa, face);
+  float eyeA  = (1.0 - smoothstep(-aa, aa, lE)) + (1.0 - smoothstep(-aa, aa, rE));
+  float mouA  = 1.0 - smoothstep(-aa, aa, mc);
+  // Holes: eyes + mouth carve out
+  float hole = clamp(eyeA + mouA, 0.0, 1.0);
+  return clamp(faceA - hole, 0.0, 1.0);
+}
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / u_res;
+  float aspect = u_res.x / u_res.y;
+
+  // ---- glitch tears: shift uv.x in horizontal slices ----
+  float gt = floor(u_time * 1.2);
+  float band = floor(uv.y * 36.0);
+  float gh = hash(band * 13.7 + gt);
+  float tearAmt = 0.0;
+  if (gh > 0.92) tearAmt = (hash(band + gt * 7.0) - 0.5) * 0.18;
+  // Beat injects a stronger tear
+  if (u_pulse > 0.7 && hash(band + 91.0) > 0.7) tearAmt += (hash(band + 33.0) - 0.5) * 0.35;
+  vec2 tuv = uv;
+  tuv.x = fract(tuv.x + tearAmt);
+
+  // ---- chromatic aberration sample of the test pattern ----
+  float ca = 0.003 + 0.005 * u_pulse;
+  vec3 baseR = testPattern(vec2(tuv.x + ca, tuv.y));
+  vec3 baseG = testPattern(tuv);
+  vec3 baseB = testPattern(vec2(tuv.x - ca, tuv.y));
+  vec3 col = vec3(baseR.r, baseG.g, baseB.b);
+
+  // ---- melting smiley over the bars ----
+  // Centre coords with aspect compensation; smiley sized in screen units
+  vec2 p = (uv - 0.5);
+  p.x *= aspect;
+  // Vertical drip: smiley as a whole sags slightly with bass
+  float bass = u_bands[0] + u_bands[1];
+  float melt = 0.12 + 0.20 * bass + 0.15 * u_pulse;
+  // Tear the smiley along with the screen tears
+  p.x += tearAmt * 0.6;
+  // Drip distortion: pull pixels below centre downward by a sin wobble
+  float drip = 0.0;
+  if (p.y < 0.05) {
+    drip = (0.05 - p.y) * (0.35 + 0.25 * sin(p.x * 12.0 + u_time * 1.5)) * melt;
+  }
+  vec2 sp = vec2(p.x, p.y + drip);
+
+  float smileyR = 0.22;
+  float mask = smileyMask(sp, smileyR, melt);
+  // Acid yellow with a hot rim
+  vec3 acid = vec3(1.00, 0.95, 0.05);
+  // Inner gradient: brighter centre
+  float dC = length(sp);
+  vec3 face = mix(acid * 1.05, acid * 0.78, smoothstep(0.0, smileyR, dC));
+  col = mix(col, face, mask);
+
+  // Outline of face for crispness
+  float ringD = abs(length(sp) - smileyR);
+  col = mix(col, vec3(0.0), 1.0 - smoothstep(0.001, 0.004, ringD));
+
+  // ---- scanlines ----
+  float scan = 0.5 + 0.5 * sin(uv.y * u_res.y * PI);
+  col *= 1.0 - 0.30 * (1.0 - scan);
+
+  // ---- aperture grille tint ----
+  float ag = mod(gl_FragCoord.x, 3.0);
+  vec3 agTint = vec3(1.0);
+  if (ag < 1.0) agTint = vec3(1.05, 0.95, 0.95);
+  else if (ag < 2.0) agTint = vec3(0.95, 1.05, 0.95);
+  else agTint = vec3(0.95, 0.95, 1.05);
+  col *= agTint;
+
+  // ---- noise grain ----
+  float n = hash2(gl_FragCoord.xy + u_time * 60.0);
+  col += (n - 0.5) * 0.06;
+
+  // ---- vignette ----
+  float vd = length(uv - 0.5);
+  col *= smoothstep(0.95, 0.25, vd);
+
+  // ---- beat flash ----
+  col += vec3(0.04, 0.04, 0.06) * u_pulse;
+
+  col = pow(clamp(col, 0.0, 1.5), vec3(0.92));
+  fragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.bindAttribLocation(prog, 0, 'a_pos');
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  console.error(gl.getProgramInfoLog(prog));
+  throw new Error('link failed');
+}
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const u_res    = gl.getUniformLocation(prog, 'u_res');
+const u_time   = gl.getUniformLocation(prog, 'u_time');
+const u_level  = gl.getUniformLocation(prog, 'u_level');
+const u_pulse  = gl.getUniformLocation(prog, 'u_pulse');
+const u_bands  = gl.getUniformLocation(prog, 'u_bands[0]');
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(window.innerWidth * dpr);
+  const h = Math.floor(window.innerHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+let pulse = 0;
+let lastBeatT = 0;
+function triggerBeat(t) { pulse = 1.0; lastBeatT = t; }
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); triggerBeat(performance.now()*0.001); }
+});
+window.addEventListener('mousedown', () => triggerBeat(performance.now()*0.001));
+window.addEventListener('touchstart', () => triggerBeat(performance.now()*0.001), {passive:true});
+
+const hint = document.getElementById('hint');
+setTimeout(() => hint.classList.add('gone'), 3000);
+
+const start = performance.now();
+let prev = start;
+let nextAutoBeat = 0;
+const BPM = 122;
+const beatInterval = 60.0 / BPM;
+
+function frame(now) {
+  const t = (now - start) * 0.001;
+  const dt = (now - prev) * 0.001;
+  prev = now;
+
+  let level = 0.5 + 0.4*Math.sin(t*0.7) + 0.1*Math.sin(t*3.1);
+  level = Math.max(0, Math.min(1, level));
+
+  if (t >= nextAutoBeat) {
+    triggerBeat(t);
+    nextAutoBeat = (nextAutoBeat === 0 ? t : nextAutoBeat) + beatInterval;
+    if (nextAutoBeat < t) nextAutoBeat = t + beatInterval;
+  }
+  const decayPerSec = Math.pow(0.91, 60);
+  pulse *= Math.pow(decayPerSec, dt);
+
+  const bands = new Float32Array(8);
+  for (let i=0;i<8;i++){
+    let v = 0.5 + 0.5*Math.sin(t*(i+1)*0.9 + i*1.3);
+    v *= 0.5 + 0.6*Math.max(0, Math.sin(t*2.0 + i*0.6));
+    v += pulse * 0.4 * (0.6 + 0.4*Math.sin(i*1.1));
+    bands[i] = Math.max(0, Math.min(1, v));
+  }
+
+  resize();
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.useProgram(prog);
+  gl.uniform2f(u_res, canvas.width, canvas.height);
+  gl.uniform1f(u_time, t);
+  gl.uniform1f(u_level, level);
+  gl.uniform1f(u_pulse, pulse);
+  gl.uniform1fv(u_bands, bands);
+
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

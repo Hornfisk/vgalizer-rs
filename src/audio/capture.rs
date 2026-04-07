@@ -30,7 +30,7 @@ impl Drop for PaCapture {
 /// Used to silence ALSA's noisy lib-level chatter during device probing
 /// (dmix/dsnoop/oss plugins complaining about unsupported stream directions).
 /// These messages are harmless but spam the terminal at startup.
-fn with_stderr_silenced<R, F: FnOnce() -> R>(f: F) -> R {
+pub(crate) fn with_stderr_silenced<R, F: FnOnce() -> R>(f: F) -> R {
     // SAFETY: we dup FD 2, replace it temporarily, then restore. All calls
     // are wrapped in `unsafe` per libc conventions. If any libc call fails
     // we fall back to running `f` without redirection.
@@ -84,29 +84,46 @@ pub fn list_input_devices() -> Vec<(usize, String)> {
 ///
 /// `start_capture` understands both prefixes and routes them through `parec`.
 pub fn list_input_devices_for_picker() -> Vec<(usize, String)> {
+    // ALSA virtual/plug devices that are noisy or useless to probe.
+    // These either spam stderr (dmix/dsnoop slaves not configured) or
+    // route through cpal in a way that captures nothing useful under
+    // pipewire-alsa.
     const SKIP: &[&str] = &[
         "jack", "lavrate", "samplerate", "speexrate",
         "speex", "upmix", "vdownmix",
+        "default", "sysdefault", "pulse",
+        "front", "rear", "center_lfe", "side", "iec958", "spdif",
+        "surround21", "surround40", "surround41", "surround50",
+        "surround51", "surround71", "hdmi", "modem", "phoneline",
+        "dmix", "dsnoop",
     ];
-    let mut result: Vec<(usize, String)> = list_input_devices()
+    let cpal_devs: Vec<(usize, String)> = list_input_devices()
         .into_iter()
-        .filter(|(_, name)| !SKIP.contains(&name.as_str()))
+        .filter(|(_, name)| {
+            // Filter exact matches and `<plug>:CARD=...` variants alike.
+            let head = name.split(':').next().unwrap_or(name.as_str());
+            !SKIP.contains(&head)
+        })
         .collect();
 
-    let offset = result.len();
+    // PA / PW monitor sources go FIRST so they're visible in the picker's
+    // first-9-slots view. cpal hardware devices come after.
+    let mut result: Vec<(usize, String)> = Vec::new();
     let pa = list_pa_monitor_sources();
     let pa_was_empty = pa.is_empty();
-    for (i, entry) in pa.into_iter().enumerate() {
-        result.push((offset + i, entry));
+    for entry in pa {
+        let i = result.len();
+        result.push((i, entry));
     }
-    // On systems without pipewire-pulse `pactl` returns nothing — fall
-    // back to native PipeWire enumeration so the picker still has useful
-    // entries. Avoid duplicating when both layers are present.
     if pa_was_empty {
-        let offset = result.len();
-        for (i, entry) in list_pw_nodes().into_iter().enumerate() {
-            result.push((offset + i, entry));
+        for entry in list_pw_nodes() {
+            let i = result.len();
+            result.push((i, entry));
         }
+    }
+    for (_, name) in cpal_devs {
+        let i = result.len();
+        result.push((i, name));
     }
     result
 }
@@ -284,7 +301,16 @@ pub fn start_capture(
     //
     // Try the pulse-compat path first (parec/pactl), then fall back to
     // native PipeWire (pw-cat/pw-dump) for systems without pipewire-pulse.
-    let is_default = device_name.map_or(true, |n| n.eq_ignore_ascii_case("default"));
+    // cpal "default-ish" device names that under pipewire-alsa rarely
+    // capture anything useful (mic at best, silence at worst). Treat
+    // them like an unset device so the auto-pick chain runs.
+    const CPAL_DEFAULT_ALIASES: &[&str] = &[
+        "default", "sysdefault", "pulse", "pipewire", "jack",
+    ];
+    let is_default = device_name.map_or(true, |n| {
+        let head = n.split(':').next().unwrap_or(n).to_ascii_lowercase();
+        CPAL_DEFAULT_ALIASES.contains(&head.as_str())
+    });
     if is_default {
         if let Some(src) = first_running_pa_monitor() {
             log::info!("Auto-selected running PA monitor source: {}", src);

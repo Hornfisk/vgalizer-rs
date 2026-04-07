@@ -25,6 +25,13 @@ fn techno_palette(t_in: f32) -> vec3<f32> {
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    // param(0u) = tempo     → 0.04..0.28 exp-zoom rate (default ~0.12)
+    // param(1u) = color     → 0..1 palette phase offset
+    // param(2u) = detail    → iteration cap multiplier (0.6..1.8)
+    let zoom_rate  = 0.04 + param(0u) * 0.24;
+    let color_off  = param(1u);
+    let detail_mul = 0.6 + param(2u) * 1.2;
+
     let t = globals.time * globals.fx_speed;
 
     // Aspect-corrected centered coords in [-asp/2, asp/2] x [-0.5, 0.5].
@@ -35,13 +42,14 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let center = vec2<f32>(-0.74364388703, 0.13182590421);
 
     // Continuous exponential zoom forever.
-    let zoom = exp(t * 0.12);
+    let zoom = exp(t * zoom_rate);
 
     // Sample point in the complex plane.
     let c = center + p * (3.0 / zoom);
 
-    // Iteration cap scales modestly with zoom depth.
-    let max_iter: u32 = u32(clamp(180.0 + log(zoom) * 30.0, 180.0, 600.0));
+    // Iteration cap scales with zoom depth, modulated by the detail knob.
+    let base_iter = (180.0 + log(zoom) * 30.0) * detail_mul;
+    let max_iter: u32 = u32(clamp(base_iter, 120.0, 600.0));
 
     var z = vec2<f32>(0.0, 0.0);
     var iter: f32 = 0.0;
@@ -68,14 +76,17 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    // Palette cycles with time + a small audio-driven phase nudge.
-    let palette_shift = globals.beat * 0.07 + globals.pulse * 0.05;
+    // Palette cycles with time + a small audio-driven phase nudge + the
+    // user's color offset knob.
+    let palette_shift = globals.beat * 0.07 + globals.pulse * 0.05 + color_off;
     let tn = iter / f32(max_iter);
     let phase = tn * 4.0 + t * 0.2 + palette_shift;
     var col = techno_palette(phase);
 
-    // Audio-reactive brightness.
-    col = col * (0.85 + 0.35 * globals.level + 0.25 * smooth_pulse());
+    // Audio-reactive brightness — kept dim enough that the trail post-pass
+    // doesn't blow it to white. Floor 0.45 (was 0.85) and a gentler level
+    // coefficient 0.25 (was 0.35) so the fractal banding stays readable.
+    col = col * (0.45 + 0.25 * globals.level + 0.25 * smooth_pulse());
 
     // Subtle blue-tinted lift from low-band energy average.
     var band_mix: f32 = 0.0;

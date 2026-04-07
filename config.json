@@ -1,31 +1,193 @@
 {
-  "dj_name": "DJ NAME",
-  "fullscreen": true,
-  "target_fps": 60,
   "audio_device": null,
-  "scene_duration": 30.0,
   "beat_sensitivity": 1.4,
-  "strobe_mode": "beat",
-  "trail_alpha": 40,
-  "name_font_size": 0.38,
-  "global_vibration": 0.5,
-  "global_vib_division": "beat",
-  "global_rotation": 0.3,
-  "glitch_intensity": 0.4,
+  "dj_name": "DJ NAME",
+  "enabled_effects": null,
+  "fullscreen": true,
+  "fx_params": {
+    "cymatics": {
+      "(unused)": 0.0,
+      "grain": 0.0,
+      "hue_phase": 0.0,
+      "plate_zoom": 1.0
+    },
+    "harmonograph": {
+      "freq_a": 0.0,
+      "freq_b": 0.0,
+      "glow": 0.25,
+      "halo_w": 0.0,
+      "hue": 1.0
+    },
+    "hyperspace": {
+      "speed": 1.0
+    },
+    "isoline_field": {
+      "(unused)": 0.0,
+      "hue": 0.0,
+      "spacing": 0.699999988079071
+    },
+    "kaleido": {
+      "rings": 1.0,
+      "rot_speed": 0.10000000149011612,
+      "spokes": 0.75
+    },
+    "kaleido_warp": {
+      "(unused)": 0.0,
+      "hue": 0.25,
+      "rot_speed": 0.0,
+      "segments": 0.0,
+      "warp_amt": 0.0
+    },
+    "laser_burst": {
+      "beat_flash": 0.800000011920929,
+      "hue": 1.0,
+      "ray_gain": 0.0,
+      "ray_thick": 0.4000000059604645,
+      "strip_glow": 1.0,
+      "strip_h": 1.0
+    },
+    "line_moire": {
+      "ang_a": 1.0,
+      "ang_b": 1.0,
+      "ang_jitter": 0.550000011920929,
+      "spacing": 1.0
+    },
+    "moebius_grid": {
+      "density": 0.0,
+      "drift": 0.5,
+      "hue": 0.25,
+      "pole_max": 0.0,
+      "rot_speed": 0.5
+    },
+    "morph_geo": {
+      "layers": 1.0,
+      "sides": 0.949999988079071
+    },
+    "radial_eq": {
+      "(unused)": 0.0,
+      "hue": 0.550000011920929,
+      "inner_r": 1.0,
+      "max_len": 1.0,
+      "ring_glow": 1.0,
+      "thickness": 1.0
+    },
+    "ring_tunnel": {
+      "rings": 0.0,
+      "rot_speed": 0.05000000074505806,
+      "shape": 0.8999999761581421,
+      "speed": 0.0
+    },
+    "scope_xy": {
+      "amp": 1.0,
+      "glow": 0.0,
+      "halo": 0.0,
+      "hue": 0.4000000059604645,
+      "ratio_a": 0.0,
+      "ratio_b": 0.0
+    },
+    "spectrum_bars": {
+      "(unused)": 0.6499999761581421,
+      "glow": 0.44999998807907104,
+      "height": 0.15000000596046448
+    },
+    "spectrum_orbit": {
+      "bar_len": 1.0,
+      "inner_r": 1.0,
+      "rot_speed": 0.25
+    },
+    "spectrum_terrain": {
+      "glow": 0.75,
+      "height": 0.4000000059604645
+    },
+    "spectrum_wave": {
+      "amp": 0.550000011920929,
+      "freq": 0.6000000238418579,
+      "lines": 1.0
+    },
+    "strange_attractor": {
+      "a": 0.800000011920929,
+      "b": 1.0,
+      "c": 1.0,
+      "d": 1.0
+    },
+    "tv_acid": {
+      "chroma_ab": 0.0,
+      "glitch": 0.0,
+      "grain": 0.0,
+      "melt": 0.0,
+      "scanlines": 0.0,
+      "smiley_r": 1.0
+    },
+    "vector_rabbit": {
+      "breathe": 1.0,
+      "glitch": 0.0,
+      "jitter": 1.0,
+      "rot_swing": 0.0,
+      "thickness": 1.0,
+      "tint": 0.0
+    },
+    "vector_terrain": {
+      "(unused)": 0.0,
+      "beat_kick": 0.0,
+      "height": 0.949999988079071,
+      "horizon": 0.949999988079071,
+      "scroll": 0.4000000059604645,
+      "wave_amt": 0.0
+    },
+    "warp_grid": {
+      "amp": 0.5,
+      "cols": 0.30000001192092896,
+      "freq": 0.0,
+      "rows": 0.6000000238418579
+    },
+    "wave_dunes": {
+      "amp": 0.4000000059604645,
+      "beat_amp": 1.0,
+      "bottom_y": 1.0,
+      "horizon_y": 0.5,
+      "perspect": 1.0,
+      "row_thick": 1.0
+    },
+    "wire_tunnel": {
+      "dash_freq": 0.949999988079071,
+      "dash_mix": 0.550000011920929,
+      "roll": 0.3499999940395355,
+      "speed": 0.949999988079071,
+      "stripes": 0.0,
+      "thickness": 0.0,
+      "twist": 1.0,
+      "warp": 0.6000000238418579
+    }
+  },
   "fx_speed_mult": 1.0,
-  "vga_intensity": 0.3,
-  "vga_ca": 4,
-  "vga_noise": 0.15,
-  "vga_sync": 0.08,
-  "spectrum_n_bands": 32,
-  "spectrum_height": 0.6,
-  "spectrum_glow": 0.4,
-  "spectrum_color": "palette",
-  "spectrum_anchor": "bottom",
-  "mirror_pool": ["none", "none", "mirror_h", "mirror_v", "mirror_quad", "kaleido"],
+  "glitch_intensity": 0.4,
+  "global_rotation": 0.3,
+  "global_vib_division": "beat",
+  "global_vibration": 0.5,
+  "kaleido_post_alpha": 140,
   "mirror_alpha": 160,
   "mirror_count": 6,
+  "mirror_pool": [
+    "none",
+    "none",
+    "mirror_h",
+    "mirror_v",
+    "mirror_quad",
+    "kaleido"
+  ],
   "mirror_spread": 8,
-  "kaleido_post_alpha": 140,
-  "enabled_effects": null
+  "name_font_size": 0.38,
+  "scene_duration": 30.0,
+  "spectrum_anchor": "bottom",
+  "spectrum_color": "palette",
+  "spectrum_glow": 0.4,
+  "spectrum_height": 0.6,
+  "spectrum_n_bands": 32,
+  "strobe_mode": "beat",
+  "target_fps": 60,
+  "trail_alpha": 40,
+  "vga_ca": 4,
+  "vga_intensity": 0.3,
+  "vga_noise": 0.15,
+  "vga_sync": 0.08
 }

@@ -33,7 +33,12 @@ pub struct Config {
     pub mirror_count: u32,
     pub mirror_spread: i32,
     pub kaleido_post_alpha: u32,
-    pub enabled_effects: Option<Vec<String>>,
+    /// Names of effects the user has explicitly turned off in the M menu.
+    /// Stored as a *deny list* so any newly added effect appears enabled by
+    /// default after a code update — the user only has to remember what they
+    /// turned off, not re-enable everything new. `None` or empty = all on.
+    #[serde(default)]
+    pub disabled_effects: Option<Vec<String>>,
     pub fx_params: HashMap<String, HashMap<String, serde_json::Value>>,
 }
 
@@ -76,7 +81,7 @@ impl Default for Config {
             mirror_count: 6,
             mirror_spread: 8,
             kaleido_post_alpha: 140,
-            enabled_effects: None,
+            disabled_effects: None,
             fx_params: HashMap::new(),
         }
     }

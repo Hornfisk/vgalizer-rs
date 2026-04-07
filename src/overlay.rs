@@ -52,11 +52,18 @@ impl HudOverlay {
         self.visible
     }
 
-    pub fn update_text(&mut self, effect: &str, bpm: f32, sensitivity: f32, level: f32) {
+    pub fn update_text(
+        &mut self,
+        effect: &str,
+        bpm: f32,
+        sensitivity: f32,
+        level: f32,
+        scene_dur: f64,
+    ) {
         let bar = level_bar(level);
         let text = format!(
-            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Lvl: {}\nSPACE next  1-9 jump  +/- sens  P mirror  A device  T name  E params  H hide  Q quit",
-            effect, bpm, sensitivity, bar
+            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  H hide  Q quit",
+            effect, bpm, sensitivity, scene_dur, bar
         );
         self.buffer.set_text(
             &mut self.font_system,

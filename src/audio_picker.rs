@@ -104,6 +104,10 @@ pub fn format_picker_text(state: &AudioPickerState) -> String {
             (pa_display_name(src), "████████".to_string())
         } else if let Some(src) = name.strip_prefix("pa:") {
             (pa_display_name(src), "░░░░░░░░".to_string())
+        } else if let Some(src) = name.strip_prefix("PW:") {
+            (pa_display_name(src), "████████".to_string())
+        } else if let Some(src) = name.strip_prefix("pw:") {
+            (pa_display_name(src), "░░░░░░░░".to_string())
         } else {
             let d: String = name.chars().take(20).collect();
             (d, format_signal_bar(alsa_level))

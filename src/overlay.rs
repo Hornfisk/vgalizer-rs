@@ -55,7 +55,7 @@ impl HudOverlay {
     pub fn update_text(&mut self, effect: &str, bpm: f32, sensitivity: f32, level: f32) {
         let bar = level_bar(level);
         let text = format!(
-            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Lvl: {}\nSPACE next  1-9 jump  +/- sens  P mirror  A device  T name  H hide  Q quit",
+            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Lvl: {}\nSPACE next  1-9 jump  +/- sens  P mirror  A device  T name  E params  H hide  Q quit",
             effect, bpm, sensitivity, bar
         );
         self.buffer.set_text(

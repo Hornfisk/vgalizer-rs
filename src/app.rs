@@ -19,7 +19,7 @@ use crate::gpu::uniforms::pack_bands;
 use crate::input::{Action, InputHandler};
 use crate::overlay::HudOverlay;
 use crate::postprocess::PostProcessChain;
-use crate::text::{NameOverlay, TextInputOverlay};
+use crate::text::{NameOverlay, ParamEditState, ParamsOverlay, TextInputOverlay};
 
 pub fn run(config: Config, config_path: String) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
@@ -54,6 +54,8 @@ struct AppState {
     audio_picker_overlay: AudioPickerOverlay,
     text_input_overlay: TextInputOverlay,
     text_input_buffer: Option<String>,
+    params_overlay: ParamsOverlay,
+    params_edit: Option<ParamEditState>,
     input: InputHandler,
     scene: SceneManager,
     beat_tracker: BeatTracker,
@@ -155,6 +157,7 @@ impl ApplicationHandler for App {
         let hud = HudOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
         let audio_picker_overlay = AudioPickerOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
         let text_input_overlay = TextInputOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
+        let params_overlay = ParamsOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
 
         let beat_tracker = BeatTracker::new(config.beat_sensitivity);
 
@@ -174,6 +177,8 @@ impl ApplicationHandler for App {
             audio_picker_overlay,
             text_input_overlay,
             text_input_buffer: None,
+            params_overlay,
+            params_edit: None,
             input: InputHandler::new(),
             scene,
             beat_tracker,
@@ -204,6 +209,9 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                state.input.shift_held = mods.state().shift_key();
             }
             WindowEvent::KeyboardInput { event: key_event, .. } => {
                 // While the text-input overlay is open, consume KeyEvents
@@ -267,6 +275,91 @@ impl ApplicationHandler for App {
                         Action::PickerCancel => {
                             state.audio_picker = None;
                             state.input.picker_open = false;
+                        }
+                        Action::ToggleParamEditor => {
+                            if state.params_edit.is_some() {
+                                state.params_edit = None;
+                                state.input.param_editor_open = false;
+                            } else {
+                                let cur = state.scene.current_effect().to_string();
+                                let live = state.effects.current_params(&cur)
+                                    .map(|p| p.params)
+                                    .unwrap_or([0.0; 16]);
+                                if let Some(ed) = ParamEditState::open(&cur, &live) {
+                                    state.params_edit = Some(ed);
+                                    state.input.param_editor_open = true;
+                                } else {
+                                    log::info!("Effect '{}' has no editable params", cur);
+                                }
+                            }
+                        }
+                        Action::ParamEditUp => {
+                            if let Some(ed) = &mut state.params_edit { ed.select_up(); }
+                        }
+                        Action::ParamEditDown => {
+                            if let Some(ed) = &mut state.params_edit { ed.select_down(); }
+                        }
+                        Action::ParamEditLeft(fast) => {
+                            if let Some(ed) = &mut state.params_edit {
+                                ed.nudge(-1, fast);
+                                let mut params = crate::gpu::EffectUniforms {
+                                    params: ed.as_params_array(),
+                                    seed: 0.0, _pad: [0.0; 3],
+                                };
+                                if let Some(cur) = state.effects.current_params(&ed.effect) {
+                                    params.seed = cur.seed;
+                                }
+                                let name = ed.effect.clone();
+                                state.effects.update_effect_params(&state.gpu.queue, &name, &params);
+                            }
+                        }
+                        Action::ParamEditRight(fast) => {
+                            if let Some(ed) = &mut state.params_edit {
+                                ed.nudge(1, fast);
+                                let mut params = crate::gpu::EffectUniforms {
+                                    params: ed.as_params_array(),
+                                    seed: 0.0, _pad: [0.0; 3],
+                                };
+                                if let Some(cur) = state.effects.current_params(&ed.effect) {
+                                    params.seed = cur.seed;
+                                }
+                                let name = ed.effect.clone();
+                                state.effects.update_effect_params(&state.gpu.queue, &name, &params);
+                            }
+                        }
+                        Action::ParamEditConfirm => {
+                            if let Some(ed) = state.params_edit.take() {
+                                // Persist each changed param to repo config.json
+                                for (i, def) in ed.defs.iter().enumerate() {
+                                    let v = ed.values[i];
+                                    if let Err(e) = crate::config::write_fx_param(
+                                        &self.config_path, &ed.effect, def.name, v,
+                                    ) {
+                                        log::warn!("Could not persist {}.{}: {}", ed.effect, def.name, e);
+                                    }
+                                    // Mirror into in-memory config so hot-reload doesn't undo us
+                                    state.config.fx_params
+                                        .entry(ed.effect.clone())
+                                        .or_default()
+                                        .insert(def.name.to_string(), serde_json::json!(v as f64));
+                                }
+                                log::info!("Saved {} params to {}", ed.effect, self.config_path);
+                                state.input.param_editor_open = false;
+                            }
+                        }
+                        Action::ParamEditCancel => {
+                            if let Some(mut ed) = state.params_edit.take() {
+                                // Restore live values to the entry-time snapshot
+                                ed.restore_original();
+                                let params = crate::gpu::EffectUniforms {
+                                    params: ed.as_params_array(),
+                                    seed: state.effects.current_params(&ed.effect).map(|p| p.seed).unwrap_or(0.0),
+                                    _pad: [0.0; 3],
+                                };
+                                let name = ed.effect.clone();
+                                state.effects.update_effect_params(&state.gpu.queue, &name, &params);
+                                state.input.param_editor_open = false;
+                            }
                         }
                         Action::PickerConfirm => {
                             // Extract name before dropping picker (releases borrow)
@@ -348,7 +441,19 @@ impl App {
                     state.sensitivity = new_cfg.beat_sensitivity;
                     state.beat_tracker.set_sensitivity(state.sensitivity);
                 }
+                let fx_changed = new_cfg.fx_params != state.config.fx_params;
                 state.config = new_cfg;
+                // Re-upload params for the active effect if its named knobs
+                // changed in the config file (e.g. another machine pushed).
+                if fx_changed && state.params_edit.is_none() {
+                    let cur = state.scene.current_effect().to_string();
+                    if !crate::effects::params::effect_params(&cur).is_empty() {
+                        let p = crate::effects::params::effect_uniforms_from_config(
+                            &cur, &state.config.fx_params,
+                        );
+                        state.effects.update_effect_params(&state.gpu.queue, &cur, &p);
+                    }
+                }
             }
         }
 
@@ -419,11 +524,22 @@ impl App {
         let effect_name = state.scene.current_effect().to_string();
 
         if scene_switched {
-            let mut rng = rand::thread_rng();
-            let params = crate::gpu::EffectUniforms {
-                params: std::array::from_fn(|_| rng.gen::<f32>()),
-                seed: rng.gen::<f32>(),
-                _pad: [0.0; 3],
+            // If the effect has named params, load them from config (with
+            // defaults). Otherwise fall back to randomised params for the
+            // existing v1/v2 effects that don't expose named knobs.
+            let defs = crate::effects::params::effect_params(&effect_name);
+            let params = if defs.is_empty() {
+                let mut rng = rand::thread_rng();
+                crate::gpu::EffectUniforms {
+                    params: std::array::from_fn(|_| rng.gen::<f32>()),
+                    seed: rng.gen::<f32>(),
+                    _pad: [0.0; 3],
+                }
+            } else {
+                crate::effects::params::effect_uniforms_from_config(
+                    &effect_name,
+                    &state.config.fx_params,
+                )
             };
             state.effects.update_effect_params(&state.gpu.queue, &effect_name, &params);
         }
@@ -578,6 +694,18 @@ impl App {
             &output_view,
             state.gpu.size,
         );
+
+        // --- Param editor overlay (only when open) ---
+        if let Some(ed) = &state.params_edit {
+            state.params_overlay.update_text(ed);
+            state.params_overlay.render(
+                &state.gpu.device,
+                &state.gpu.queue,
+                &mut encoder,
+                &output_view,
+                state.gpu.size,
+            );
+        }
 
         // --- Audio picker overlay (only when open) ---
         if let Some(picker) = &mut state.audio_picker {

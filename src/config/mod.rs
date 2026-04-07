@@ -64,6 +64,36 @@ pub fn write_dj_name(dj_name: &str) -> std::io::Result<()> {
     write_string_field_to_path(&dirs_config(), "dj_name", dj_name)
 }
 
+/// Persist a single per-effect float parameter to the given config file
+/// (typically the repo `config.json` so the value travels via git).
+/// Reads existing JSON, sets `fx_params[effect][name] = value`, atomic write.
+pub fn write_fx_param(path: &str, effect: &str, name: &str, value: f32) -> std::io::Result<()> {
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let mut json: serde_json::Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if !json.get("fx_params").map(|v| v.is_object()).unwrap_or(false) {
+        json["fx_params"] = serde_json::json!({});
+    }
+    if !json["fx_params"].get(effect).map(|v| v.is_object()).unwrap_or(false) {
+        json["fx_params"][effect] = serde_json::json!({});
+    }
+    json["fx_params"][effect][name] =
+        serde_json::Value::from(((value * 10000.0).round() / 10000.0) as f64);
+
+    let pretty = serde_json::to_string_pretty(&json)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    let tmp = format!("{}.tmp", path);
+    std::fs::write(&tmp, &pretty)?;
+    std::fs::rename(&tmp, path)
+}
+
 /// Generic helper: set a single top-level string field in the JSON config,
 /// preserving all other fields, atomic tmp→rename.
 fn write_string_field_to_path(path: &str, key: &str, value: &str) -> std::io::Result<()> {

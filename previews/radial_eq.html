@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>radial_eq</title>
+<!--
+  radial_eq · Polar EQ fan / sonar pulse. 64 thin radial spokes around a
+  central circle. Each spoke length = a band level (8 bands tiled around
+  the disc, mirrored top↔bottom for symmetry). Centre circle pulses on
+  beat, two faint guide rings frame the disc.
+
+  Planned in-engine params (param 0..5):
+    0  spoke_count    16..96      64    number of radial spokes
+    1  inner_radius   0.05..0.45  0.18  centre disc radius
+    2  spoke_max_len  0.20..0.80  0.55  maximum spoke length
+    3  thickness      0.001..0.01 0.003 tangential thickness of each spoke
+    4  hue            0.0..1.0    0.55  cyan / mint / magenta lean
+    5  ring_glow      0.0..1.5    0.7   strength of the ring guides
+-->
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; font-family: ui-monospace, Menlo, monospace; color:#9ad; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    opacity: 0.85; transition: opacity 1.2s ease;
+    text-shadow: 0 0 6px #000;
+    pointer-events: none;
+  }
+  #hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">radial_eq &middot; click / space = beat</div>
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
+if (!gl) { document.body.textContent = 'WebGL2 not available.'; throw new Error('no webgl2'); }
+
+const VS = `#version 300 es
+in vec2 a_pos;
+void main(){ gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+
+const FS = `#version 300 es
+precision highp float;
+out vec4 fragColor;
+
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_level;
+uniform float u_pulse;
+uniform float u_bands[8];
+
+#define PI  3.14159265359
+#define TAU 6.28318530718
+#define SPOKES 64
+
+void main(){
+  vec2 res = u_res;
+  vec2 p = (gl_FragCoord.xy - 0.5*res) / min(res.x, res.y);
+
+  float r   = length(p);
+  float ang = atan(p.y, p.x);   // -π..π
+
+  vec3 col = vec3(0.0);
+
+  float innerR = 0.18;
+  float maxLen = 0.55;
+
+  // Find which spoke we're closest to
+  float spokeF = (ang + PI) / TAU * float(SPOKES);
+  int sIdx = int(floor(spokeF + 0.5)) % SPOKES;
+
+  // Mirror across the horizontal axis: spokes in lower half use same band
+  // as their upper-half counterpart, then mirror across vertical too for
+  // 4-fold symmetry — gives the radar disc a clean balanced look.
+  int hN = SPOKES / 2;
+  int qN = SPOKES / 4;
+  int sym = sIdx;
+  if (sym >= hN) sym = SPOKES - 1 - sym;
+  if (sym >= qN) sym = hN - 1 - sym;
+  int bandIdx = sym % 8;
+  float bandV = u_bands[bandIdx];
+
+  // Sweep modulator: a slowly rotating gain that brightens spokes near the
+  // current sweep angle, like a sonar beam.
+  float sweepAng = mod(u_time * 0.6, TAU) - PI;
+  float dSweep = ang - sweepAng;
+  dSweep = atan(sin(dSweep), cos(dSweep));
+  float sweepGain = 0.55 + 0.65 * exp(-dSweep*dSweep*4.0);
+
+  // Spoke length
+  float spokeLen = innerR + bandV * maxLen * (0.7 + 0.4 * u_pulse) * sweepGain;
+
+  // Tangential distance to spoke centre line
+  float spokeAngCentre = (float(sIdx) + 0.5) / float(SPOKES) * TAU - PI;
+  float dAng = ang - spokeAngCentre;
+  dAng = atan(sin(dAng), cos(dAng));
+  float tang = abs(dAng) * r;
+
+  float thickness = 0.0028;
+  float aa = 1.5 / u_res.y;
+  float spokeW = 1.0 - smoothstep(thickness * 0.4, thickness * 1.6 + aa, tang);
+
+  // Spoke is visible only between innerR and spokeLen
+  if (r >= innerR - 0.002 && r <= spokeLen + 0.002 && spokeW > 0.001) {
+    vec3 cyan   = vec3(0.20, 0.85, 1.00);
+    vec3 white  = vec3(0.85, 0.95, 1.00);
+    // hot tip
+    float tipD = abs(r - spokeLen);
+    float tipW = exp(-tipD * 80.0);
+    col += cyan  * spokeW * (0.6 + 0.5 * bandV) * sweepGain;
+    col += white * spokeW * tipW * (0.6 + 0.6 * u_pulse);
+  }
+
+  // Inner circle (pulses on beat)
+  float circD = abs(r - innerR);
+  float circW = exp(-circD * circD * 6000.0);
+  col += vec3(0.30, 0.90, 1.00) * circW * (0.35 + 0.7 * u_pulse);
+
+  // Two guide rings further out
+  float ring1D = abs(r - 0.45);
+  col += vec3(0.10, 0.40, 0.55) * exp(-ring1D * ring1D * 2500.0) * 0.4;
+  float ring2D = abs(r - 0.78);
+  col += vec3(0.06, 0.25, 0.40) * exp(-ring2D * ring2D * 2500.0) * 0.35;
+
+  // Faint cross-hairs
+  float crossX = exp(-p.x*p.x*1500.0) * smoothstep(0.0, 0.78, abs(p.y));
+  float crossY = exp(-p.y*p.y*1500.0) * smoothstep(0.0, 0.78, abs(p.x));
+  col += vec3(0.08, 0.30, 0.40) * (crossX + crossY) * 0.18;
+
+  // Centre dot
+  col += vec3(0.30, 0.90, 1.00) * exp(-r*r*1200.0) * 0.6;
+
+  // Beat radial wash
+  col += vec3(0.05, 0.20, 0.30) * u_pulse * exp(-r*1.6);
+
+  // Vignette
+  col *= smoothstep(1.2, 0.2, r);
+
+  col = 1.0 - exp(-col * 1.3);
+  col = pow(col, vec3(0.92));
+  fragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.bindAttribLocation(prog, 0, 'a_pos');
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  console.error(gl.getProgramInfoLog(prog));
+  throw new Error('link failed');
+}
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const u_res    = gl.getUniformLocation(prog, 'u_res');
+const u_time   = gl.getUniformLocation(prog, 'u_time');
+const u_level  = gl.getUniformLocation(prog, 'u_level');
+const u_pulse  = gl.getUniformLocation(prog, 'u_pulse');
+const u_bands  = gl.getUniformLocation(prog, 'u_bands[0]');
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(window.innerWidth * dpr);
+  const h = Math.floor(window.innerHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+let pulse = 0;
+let lastBeatT = 0;
+function triggerBeat(t) { pulse = 1.0; lastBeatT = t; }
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); triggerBeat(performance.now()*0.001); }
+});
+window.addEventListener('mousedown', () => triggerBeat(performance.now()*0.001));
+window.addEventListener('touchstart', () => triggerBeat(performance.now()*0.001), {passive:true});
+
+const hint = document.getElementById('hint');
+setTimeout(() => hint.classList.add('gone'), 3000);
+
+const start = performance.now();
+let prev = start;
+let nextAutoBeat = 0;
+const BPM = 128;
+const beatInterval = 60.0 / BPM;
+
+function frame(now) {
+  const t = (now - start) * 0.001;
+  const dt = (now - prev) * 0.001;
+  prev = now;
+
+  let level = 0.5 + 0.4*Math.sin(t*0.7) + 0.1*Math.sin(t*3.1);
+  level = Math.max(0, Math.min(1, level));
+
+  if (t >= nextAutoBeat) {
+    triggerBeat(t);
+    nextAutoBeat = (nextAutoBeat === 0 ? t : nextAutoBeat) + beatInterval;
+    if (nextAutoBeat < t) nextAutoBeat = t + beatInterval;
+  }
+  const decayPerSec = Math.pow(0.91, 60);
+  pulse *= Math.pow(decayPerSec, dt);
+
+  const bands = new Float32Array(8);
+  for (let i=0;i<8;i++){
+    let v = 0.45 + 0.55*Math.sin(t*(i+1)*1.0 + i*1.3);
+    v *= 0.5 + 0.7*Math.max(0, Math.sin(t*2.1 + i*0.6));
+    v += pulse * 0.4 * (0.6 + 0.4*Math.sin(i*1.1));
+    bands[i] = Math.max(0, Math.min(1, v));
+  }
+
+  resize();
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.useProgram(prog);
+  gl.uniform2f(u_res, canvas.width, canvas.height);
+  gl.uniform1f(u_time, t);
+  gl.uniform1f(u_level, level);
+  gl.uniform1f(u_pulse, pulse);
+  gl.uniform1fv(u_bands, bands);
+
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

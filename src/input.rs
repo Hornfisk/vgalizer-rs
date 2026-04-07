@@ -21,16 +21,31 @@ pub enum Action {
     PickerCancel,
     // DJ name text input
     ToggleTextInput,
+    // Per-effect parameter editor
+    ToggleParamEditor,
+    ParamEditUp,
+    ParamEditDown,
+    ParamEditLeft(bool),  // bool = fast (Shift held)
+    ParamEditRight(bool),
+    ParamEditConfirm,
+    ParamEditCancel,
 }
 
 pub struct InputHandler {
     pub picker_open: bool,
     pub text_input_open: bool,
+    pub param_editor_open: bool,
+    pub shift_held: bool,
 }
 
 impl InputHandler {
     pub fn new() -> Self {
-        Self { picker_open: false, text_input_open: false }
+        Self {
+            picker_open: false,
+            text_input_open: false,
+            param_editor_open: false,
+            shift_held: false,
+        }
     }
 
     pub fn handle(&self, event: &KeyEvent) -> Option<Action> {
@@ -50,6 +65,20 @@ impl InputHandler {
         // A always toggles the picker regardless of mode
         if key == KeyCode::KeyA {
             return Some(Action::ToggleAudioPicker);
+        }
+
+        // Param editor consumes nav keys exclusively while open.
+        if self.param_editor_open {
+            return match key {
+                KeyCode::ArrowUp => Some(Action::ParamEditUp),
+                KeyCode::ArrowDown => Some(Action::ParamEditDown),
+                KeyCode::ArrowLeft => Some(Action::ParamEditLeft(self.shift_held)),
+                KeyCode::ArrowRight => Some(Action::ParamEditRight(self.shift_held)),
+                KeyCode::Enter | KeyCode::NumpadEnter => Some(Action::ParamEditConfirm),
+                KeyCode::Escape => Some(Action::ParamEditCancel),
+                KeyCode::KeyE => Some(Action::ToggleParamEditor),
+                _ => None,
+            };
         }
 
         if self.picker_open {
@@ -91,6 +120,7 @@ impl InputHandler {
             KeyCode::KeyF => Some(Action::ToggleFullscreen),
             KeyCode::KeyW => Some(Action::ToggleWindowed),
             KeyCode::KeyT => Some(Action::ToggleTextInput),
+            KeyCode::KeyE => Some(Action::ToggleParamEditor),
             KeyCode::KeyQ | KeyCode::Escape => Some(Action::Quit),
             _ => None,
         }

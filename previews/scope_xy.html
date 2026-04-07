@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>scope_xy</title>
+<!--
+  scope_xy · Vector oscilloscope (Lissajous / waveform XY mode).
+  A closed parametric polyline traced from a sum of band-driven sines,
+  rendered as a luminous thin line on black with a soft phosphor halo.
+  Pure Winamp / Berlin laser scope tribute.
+
+  Planned in-engine params (param 0..5):
+    0  ratio_a      1.0..9.0      3.0    Lissajous X frequency
+    1  ratio_b      1.0..9.0      4.0    Lissajous Y frequency
+    2  amp          0.10..0.60    0.45   curve amplitude
+    3  thickness    0.5..4.0      1.4    line thickness in pixels
+    4  trail        0.50..0.99    0.92   phosphor decay (frame trail)
+    5  hue          0.00..1.00    0.55   line tint (cyan→magenta→amber)
+-->
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; font-family: ui-monospace, Menlo, monospace; color:#9ad; }
+  canvas { display:block; width:100vw; height:100vh; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    opacity: 0.85; transition: opacity 1.2s ease;
+    text-shadow: 0 0 6px #000;
+    pointer-events: none;
+  }
+  #hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">scope_xy &middot; click / space = beat</div>
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
+if (!gl) {
+  document.body.textContent = 'WebGL2 not available.';
+  throw new Error('no webgl2');
+}
+
+// We use ping-pong FBOs for phosphor trail decay.
+
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+void main(){
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+// === Trace pass: composite previous frame * decay + new curve ===
+const TRACE_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+
+uniform sampler2D u_prev;
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_level;
+uniform float u_pulse;
+uniform float u_decay;
+uniform float u_a;
+uniform float u_b;
+uniform float u_amp;
+uniform vec3  u_color;
+uniform float u_bands[8];
+
+#define TAU 6.28318530718
+#define N 384
+
+void main(){
+  vec2 res = u_res;
+  vec2 p = (v_uv - 0.5) * 2.0;
+  // Aspect compensate so the scope is square in centre
+  float aspect = res.x / res.y;
+  p.x *= aspect;
+
+  // Curve sample loop: track minimum distance from this pixel to the curve.
+  // The curve is a Lissajous-style sum, with band-driven harmonic content
+  // that gives the trace its "alive" wiggle.
+  float a = u_a + u_bands[1] * 1.5;
+  float b = u_b + u_bands[3] * 1.5;
+  float ph = u_time * 0.35;
+  float amp = u_amp * (1.0 + 0.25 * u_pulse);
+
+  float minD = 1e9;
+  for (int i = 0; i < N; ++i) {
+    float t = float(i) / float(N) * TAU;
+    // Multi-harmonic Lissajous so the shape evolves
+    float x = sin(a * t + ph) * amp
+            + sin(a * t * 2.0 + ph * 1.3) * amp * 0.18 * u_bands[2];
+    float y = sin(b * t + ph * 0.7) * amp
+            + sin(b * t * 2.0 - ph * 0.9) * amp * 0.18 * u_bands[5];
+    vec2 q = vec2(x, y);
+    float d = length(p - q);
+    minD = min(minD, d);
+  }
+
+  // Convert distance to a thin AA line
+  float pix = 2.0 / min(res.x, res.y);
+  float core = exp(-(minD * minD) / (pix * pix * 1.5));        // tight white core
+  float halo = exp(-(minD * minD) / 0.0025);                    // wider colour glow
+  vec3 newCol = vec3(core) + u_color * halo * 0.55;
+  newCol += u_color * u_pulse * 0.12 * exp(-length(p) * 1.5);
+
+  // Composite over decayed previous frame
+  vec3 prev = texture(u_prev, v_uv).rgb * u_decay;
+  vec3 outc = max(prev, newCol);   // brightest-wins; cleaner than additive
+  outc += newCol * 0.4;            // a touch of accumulation
+
+  fragColor = vec4(outc, 1.0);
+}`;
+
+// === Present pass: tonemap from float buffer to screen ===
+const PRESENT_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_src;
+void main(){
+  vec3 c = texture(u_src, v_uv).rgb;
+  c = 1.0 - exp(-c * 1.6);
+  c = pow(c, vec3(0.92));
+  fragColor = vec4(c, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+function makeProg(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, 'a_pos');
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p));
+    throw new Error('link failed');
+  }
+  return p;
+}
+const traceProg   = makeProg(VS, TRACE_FS);
+const presentProg = makeProg(VS, PRESENT_FS);
+
+// Need EXT_color_buffer_float for RGBA16F render target
+const ext = gl.getExtension('EXT_color_buffer_float');
+if (!ext) console.warn('EXT_color_buffer_float missing — trail may clip');
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// Trace uniforms
+const T_u_prev   = gl.getUniformLocation(traceProg, 'u_prev');
+const T_u_res    = gl.getUniformLocation(traceProg, 'u_res');
+const T_u_time   = gl.getUniformLocation(traceProg, 'u_time');
+const T_u_level  = gl.getUniformLocation(traceProg, 'u_level');
+const T_u_pulse  = gl.getUniformLocation(traceProg, 'u_pulse');
+const T_u_decay  = gl.getUniformLocation(traceProg, 'u_decay');
+const T_u_a      = gl.getUniformLocation(traceProg, 'u_a');
+const T_u_b      = gl.getUniformLocation(traceProg, 'u_b');
+const T_u_amp    = gl.getUniformLocation(traceProg, 'u_amp');
+const T_u_color  = gl.getUniformLocation(traceProg, 'u_color');
+const T_u_bands  = gl.getUniformLocation(traceProg, 'u_bands[0]');
+
+const P_u_src    = gl.getUniformLocation(presentProg, 'u_src');
+
+// Ping-pong FBOs
+let pingTex = null, pingFbo = null;
+let pongTex = null, pongFbo = null;
+let fbW = 0, fbH = 0;
+
+function makeFbo(w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { tex, fbo };
+}
+function resizeFbos() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // Cap internal resolution so the per-pixel curve loop stays cheap
+  const cap = 720;
+  const aspect = window.innerWidth / window.innerHeight;
+  let h = Math.min(window.innerHeight * dpr, cap);
+  let w = Math.floor(h * aspect);
+  h = Math.floor(h);
+  if (w === fbW && h === fbH) return;
+  fbW = w; fbH = h;
+
+  if (pingTex) { gl.deleteTexture(pingTex); gl.deleteFramebuffer(pingFbo); }
+  if (pongTex) { gl.deleteTexture(pongTex); gl.deleteFramebuffer(pongFbo); }
+  const a = makeFbo(w, h); pingTex = a.tex; pingFbo = a.fbo;
+  const b = makeFbo(w, h); pongTex = b.tex; pongFbo = b.fbo;
+
+  // Clear both
+  gl.bindFramebuffer(gl.FRAMEBUFFER, pingFbo);
+  gl.viewport(0,0,w,h); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, pongFbo);
+  gl.viewport(0,0,w,h); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+function resizeCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.floor(window.innerWidth * dpr);
+  const h = Math.floor(window.innerHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w; canvas.height = h;
+  }
+}
+window.addEventListener('resize', () => { resizeCanvas(); resizeFbos(); });
+resizeCanvas(); resizeFbos();
+
+let pulse = 0;
+let lastBeatT = 0;
+function triggerBeat(t) { pulse = 1.0; lastBeatT = t; }
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); triggerBeat(performance.now()*0.001); }
+});
+window.addEventListener('mousedown', () => triggerBeat(performance.now()*0.001));
+window.addEventListener('touchstart', () => triggerBeat(performance.now()*0.001), {passive:true});
+
+const hint = document.getElementById('hint');
+setTimeout(() => hint.classList.add('gone'), 3000);
+
+const start = performance.now();
+let prev = start;
+let nextAutoBeat = 0;
+const BPM = 124;
+const beatInterval = 60.0 / BPM;
+let useFront = true; // ping → pong each frame
+
+function frame(now) {
+  const t = (now - start) * 0.001;
+  const dt = (now - prev) * 0.001;
+  prev = now;
+
+  let level = 0.5 + 0.4*Math.sin(t*0.7) + 0.1*Math.sin(t*3.1);
+  level = Math.max(0, Math.min(1, level));
+
+  if (t >= nextAutoBeat) {
+    triggerBeat(t);
+    nextAutoBeat = (nextAutoBeat === 0 ? t : nextAutoBeat) + beatInterval;
+    if (nextAutoBeat < t) nextAutoBeat = t + beatInterval;
+  }
+  const decayPerSec = Math.pow(0.92, 60);
+  pulse *= Math.pow(decayPerSec, dt);
+
+  const bands = new Float32Array(8);
+  for (let i=0;i<8;i++){
+    bands[i] = Math.max(0, Math.min(1, 0.4 + 0.5*Math.sin(t*(i+1)*0.9 + i*1.1)));
+  }
+
+  resizeCanvas(); resizeFbos();
+
+  // === Trace pass into back buffer ===
+  const srcTex = useFront ? pingTex : pongTex;
+  const dstFbo = useFront ? pongFbo : pingFbo;
+  const dstTex = useFront ? pongTex : pingTex;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
+  gl.viewport(0, 0, fbW, fbH);
+  gl.useProgram(traceProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, srcTex);
+  gl.uniform1i(T_u_prev, 0);
+  gl.uniform2f(T_u_res, fbW, fbH);
+  gl.uniform1f(T_u_time, t);
+  gl.uniform1f(T_u_level, level);
+  gl.uniform1f(T_u_pulse, pulse);
+  gl.uniform1f(T_u_decay, 0.92);
+  gl.uniform1f(T_u_a, 3.0);
+  gl.uniform1f(T_u_b, 4.0);
+  gl.uniform1f(T_u_amp, 0.45);
+  gl.uniform3f(T_u_color, 0.30, 0.85, 1.00);   // cyan
+  gl.uniform1fv(T_u_bands, bands);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // === Present pass to screen ===
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(presentProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, dstTex);
+  gl.uniform1i(P_u_src, 0);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  useFront = !useFront;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -100,7 +100,6 @@ impl EffectRegistry {
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
         target_format: wgpu::TextureFormat,
-        enabled: Option<&[String]>,
     ) -> Self {
         // Global bind group layout: one uniform buffer
         let global_bind_group_layout =
@@ -145,14 +144,9 @@ impl EffectRegistry {
             source: wgpu::ShaderSource::Wgsl(VERT_SRC.into()),
         });
 
-        let names: Vec<&str> = match enabled {
-            Some(list) => EFFECT_NAMES
-                .iter()
-                .filter(|&&n| list.iter().any(|e| e == n))
-                .cloned()
-                .collect(),
-            None => EFFECT_NAMES.to_vec(),
-        };
+        // Always build pipelines for every effect — runtime enable/disable
+        // is handled by SceneManager so it can toggle without rebuilding.
+        let names: Vec<&str> = EFFECT_NAMES.to_vec();
 
         let mut pipelines = HashMap::new();
         let mut effect_buffers = HashMap::new();

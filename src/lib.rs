@@ -5,6 +5,8 @@ pub mod cli;
 pub mod colors;
 pub mod config;
 pub mod effects;
+pub mod effects_menu;
+pub mod global_settings;
 pub mod gpu;
 pub mod input;
 pub mod overlay;

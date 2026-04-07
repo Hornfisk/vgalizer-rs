@@ -11,6 +11,8 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::audio::{AtomicAudioState, BeatTracker};
 use crate::audio_picker::{AudioPicker, AudioPickerOverlay};
+use crate::effects_menu::{EffectsMenuOverlay, EffectsMenuState};
+use crate::global_settings::{GlobalKnob, GlobalSettingsOverlay, GlobalSettingsState};
 use crate::colors::palette;
 use crate::config::Config;
 use crate::effects::{manager::SceneManager, EffectRegistry};
@@ -56,6 +58,10 @@ struct AppState {
     text_input_buffer: Option<String>,
     params_overlay: ParamsOverlay,
     params_edit: Option<ParamEditState>,
+    effects_menu_overlay: EffectsMenuOverlay,
+    effects_menu: Option<EffectsMenuState>,
+    global_settings_overlay: GlobalSettingsOverlay,
+    global_settings: Option<GlobalSettingsState>,
     input: InputHandler,
     scene: SceneManager,
     beat_tracker: BeatTracker,
@@ -104,7 +110,6 @@ impl ApplicationHandler for App {
             &gpu.queue,
             // Effects render to Rgba16Float; only blit to swapchain uses sRGB
             wgpu::TextureFormat::Rgba16Float,
-            config.enabled_effects.as_deref(),
         );
         let global_bg = effects.global_bind_group(&gpu.device);
 
@@ -128,7 +133,12 @@ impl ApplicationHandler for App {
 
         // Scene manager
         let effect_names = effects.effect_names().iter().map(|s| s.to_string()).collect();
-        let scene = SceneManager::new(effect_names, &config.mirror_pool, config.scene_duration);
+        let scene = SceneManager::new(
+            effect_names,
+            &config.mirror_pool,
+            config.scene_duration,
+            config.disabled_effects.as_deref(),
+        );
 
         // Audio (optional — runs silently if no device is available)
         let audio_state = Arc::new(AtomicAudioState::new());
@@ -158,6 +168,8 @@ impl ApplicationHandler for App {
         let audio_picker_overlay = AudioPickerOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
         let text_input_overlay = TextInputOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
         let params_overlay = ParamsOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
+        let effects_menu_overlay = EffectsMenuOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
+        let global_settings_overlay = GlobalSettingsOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
 
         let beat_tracker = BeatTracker::new(config.beat_sensitivity);
 
@@ -179,6 +191,10 @@ impl ApplicationHandler for App {
             text_input_buffer: None,
             params_overlay,
             params_edit: None,
+            effects_menu_overlay,
+            effects_menu: None,
+            global_settings_overlay,
+            global_settings: None,
             input: InputHandler::new(),
             scene,
             beat_tracker,
@@ -337,7 +353,7 @@ impl ApplicationHandler for App {
                                     for (i, def) in ed.defs.iter().enumerate() {
                                         let v = ed.values[i];
                                         if let Err(e) = crate::config::write_fx_param(
-                                            &self.config_path, &ed.effect, def.name, v,
+                                            &crate::config::dirs_config(), &ed.effect, def.name, v,
                                         ) {
                                             log::warn!("Could not persist {}.{}: {}", ed.effect, def.name, e);
                                         }
@@ -347,7 +363,7 @@ impl ApplicationHandler for App {
                                             .or_default()
                                             .insert(def.name.to_string(), serde_json::json!(v as f64));
                                     }
-                                    log::info!("Saved {} params to {}", ed.effect, self.config_path);
+                                    log::info!("Saved {} params to XDG config", ed.effect);
                                 }
                                 state.input.param_editor_open = false;
                             }
@@ -367,6 +383,123 @@ impl ApplicationHandler for App {
                                 }
                                 state.input.param_editor_open = false;
                             }
+                        }
+                        Action::ToggleGlobalSettings => {
+                            if state.global_settings.is_some() {
+                                state.global_settings = None;
+                                state.input.global_settings_open = false;
+                            } else {
+                                state.global_settings = Some(GlobalSettingsState::open(&state.config));
+                                state.input.global_settings_open = true;
+                            }
+                        }
+                        Action::GlobalSettingsUp => {
+                            if let Some(g) = &mut state.global_settings { g.select_up(); }
+                        }
+                        Action::GlobalSettingsDown => {
+                            if let Some(g) = &mut state.global_settings { g.select_down(); }
+                        }
+                        Action::GlobalSettingsLeft(fast) => {
+                            if let Some(g) = &mut state.global_settings {
+                                g.nudge(&mut state.config, -1, fast);
+                            }
+                        }
+                        Action::GlobalSettingsRight(fast) => {
+                            if let Some(g) = &mut state.global_settings {
+                                g.nudge(&mut state.config, 1, fast);
+                            }
+                        }
+                        Action::GlobalSettingsConfirm => {
+                            if state.global_settings.take().is_some() {
+                                // Persist all eight knobs in one atomic write.
+                                let updates: Vec<(&str, serde_json::Value)> =
+                                    GlobalKnob::ALL
+                                        .iter()
+                                        .map(|k| (k.config_key(), k.to_json(&state.config)))
+                                        .collect();
+                                if let Err(e) = crate::config::write_xdg_fields(&updates) {
+                                    log::warn!("Could not persist global settings: {}", e);
+                                } else {
+                                    log::info!("Saved global settings to XDG config");
+                                }
+                                state.input.global_settings_open = false;
+                            }
+                        }
+                        Action::GlobalSettingsCancel => {
+                            if let Some(g) = state.global_settings.take() {
+                                g.restore(&mut state.config);
+                                state.input.global_settings_open = false;
+                            }
+                        }
+                        Action::SceneDurationDown => {
+                            let new_dur = (state.scene.scene_duration() - 5.0).max(3.0);
+                            state.scene.set_scene_duration(new_dur);
+                            state.config.scene_duration = state.scene.scene_duration();
+                            if let Err(e) = crate::config::write_scene_duration(state.scene.scene_duration()) {
+                                log::warn!("Could not persist scene_duration: {}", e);
+                            }
+                            log::info!("Scene duration: {:.0}s", state.scene.scene_duration());
+                        }
+                        Action::SceneDurationUp => {
+                            let new_dur = (state.scene.scene_duration() + 5.0).min(300.0);
+                            state.scene.set_scene_duration(new_dur);
+                            state.config.scene_duration = state.scene.scene_duration();
+                            if let Err(e) = crate::config::write_scene_duration(state.scene.scene_duration()) {
+                                log::warn!("Could not persist scene_duration: {}", e);
+                            }
+                            log::info!("Scene duration: {:.0}s", state.scene.scene_duration());
+                        }
+                        Action::ToggleEffectsMenu => {
+                            if state.effects_menu.is_some() {
+                                state.effects_menu = None;
+                                state.input.effects_menu_open = false;
+                            } else {
+                                let names: Vec<String> = state.scene.effect_names().to_vec();
+                                let mask: Vec<bool> = state.scene.enabled().to_vec();
+                                state.effects_menu = Some(EffectsMenuState::open(&names, &mask));
+                                state.input.effects_menu_open = true;
+                            }
+                        }
+                        Action::EffectsMenuUp => {
+                            if let Some(m) = &mut state.effects_menu { m.move_up(); }
+                        }
+                        Action::EffectsMenuDown => {
+                            if let Some(m) = &mut state.effects_menu { m.move_down(); }
+                        }
+                        Action::EffectsMenuToggle => {
+                            if let Some(m) = &mut state.effects_menu { m.toggle_current(); }
+                        }
+                        Action::EffectsMenuConfirm => {
+                            if let Some(m) = state.effects_menu.take() {
+                                // Persist as a deny list so future code
+                                // updates that add new effects auto-enable.
+                                let disabled_list = m.disabled_names();
+                                let opt: Option<&[String]> = if disabled_list.is_empty() {
+                                    None
+                                } else {
+                                    Some(disabled_list.as_slice())
+                                };
+                                state.scene.set_disabled_filter(opt);
+                                state.config.disabled_effects = if disabled_list.is_empty() {
+                                    None
+                                } else {
+                                    Some(disabled_list.clone())
+                                };
+                                if let Err(e) = crate::config::write_disabled_effects(opt) {
+                                    log::warn!("Could not persist disabled_effects: {}", e);
+                                }
+                                log::info!(
+                                    "Effects: {}/{} on ({} disabled)",
+                                    m.effect_names.len() - disabled_list.len(),
+                                    m.effect_names.len(),
+                                    disabled_list.len(),
+                                );
+                                state.input.effects_menu_open = false;
+                            }
+                        }
+                        Action::EffectsMenuCancel => {
+                            state.effects_menu = None;
+                            state.input.effects_menu_open = false;
                         }
                         Action::PickerConfirm => {
                             // Extract name before dropping picker (releases borrow)
@@ -607,7 +740,13 @@ impl App {
         state.name_overlay.update(beat_state.beat, state.pulse);
 
         // HUD text
-        state.hud.update_text(&effect_name, beat_state.bpm, state.sensitivity, level);
+        state.hud.update_text(
+            &effect_name,
+            beat_state.bpm,
+            state.sensitivity,
+            level,
+            state.scene.scene_duration(),
+        );
 
         // Acquire swapchain frame
         let output = match state.gpu.surface.get_current_texture() {
@@ -706,6 +845,30 @@ impl App {
         if let Some(ed) = &state.params_edit {
             state.params_overlay.update_text(ed);
             state.params_overlay.render(
+                &state.gpu.device,
+                &state.gpu.queue,
+                &mut encoder,
+                &output_view,
+                state.gpu.size,
+            );
+        }
+
+        // --- Effects menu overlay (only when open) ---
+        if let Some(menu) = &state.effects_menu {
+            state.effects_menu_overlay.update_text(menu, state.scene.scene_duration());
+            state.effects_menu_overlay.render(
+                &state.gpu.device,
+                &state.gpu.queue,
+                &mut encoder,
+                &output_view,
+                state.gpu.size,
+            );
+        }
+
+        // --- Global settings overlay (only when open) ---
+        if let Some(g) = &state.global_settings {
+            state.global_settings_overlay.update_text(g, &state.config);
+            state.global_settings_overlay.render(
                 &state.gpu.device,
                 &state.gpu.queue,
                 &mut encoder,

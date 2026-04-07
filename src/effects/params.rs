@@ -112,6 +112,15 @@ const VORONOI_PULSE: &[ParamDef] = &[
     p("traj_y",     0.0, 1.0, 0.5, 0.05),
 ];
 
+// mandelbrot_zoom: continually zooms into Seahorse Valley. Three knobs:
+// tempo = exp-zoom rate, color = palette phase offset, detail = iteration
+// cap multiplier (crunchier vs smoother banding).
+const MANDELBROT_ZOOM: &[ParamDef] = &[
+    p("tempo",      0.0, 1.0, 0.33, 0.05),  // → 0.04..0.28 zoom rate
+    p("color",      0.0, 1.0, 0.0,  0.05),  // palette phase offset
+    p("detail",     0.0, 1.0, 0.5,  0.05),  // iter cap × 0.6..1.8
+];
+
 // === v3 additions ===
 
 const VECTOR_TERRAIN: &[ParamDef] = &[
@@ -235,7 +244,7 @@ pub fn effect_params(effect: &str) -> &'static [ParamDef] {
         "strange_attractor" => STRANGE_ATTRACTOR,
         "wire_tunnel"       => WIRE_TUNNEL,
         "voronoi_pulse"     => VORONOI_PULSE,
-        // mandelbrot_zoom is fully procedural (no param() reads) → no entry
+        "mandelbrot_zoom"   => MANDELBROT_ZOOM,
         // v3
         "vector_terrain"    => VECTOR_TERRAIN,
         "laser_burst"       => LASER_BURST,

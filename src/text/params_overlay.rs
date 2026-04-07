@@ -33,31 +33,52 @@ impl ParamEditState {
             .enumerate()
             .map(|(i, d)| current_params[i].clamp(d.min, d.max))
             .collect();
+        // Start the cursor on the first non-(unused) row so the first
+        // arrow keypress lands somewhere visible.
+        let cursor = defs
+            .iter()
+            .position(|d| d.name != "(unused)")
+            .unwrap_or(0);
         Self {
             effect: effect.to_string(),
             defs,
             values: values.clone(),
             original: values,
-            cursor: 0,
+            cursor,
         }
     }
 
-    /// Whether this editor session has any editable parameters at all.
+    /// Whether this editor session has any *visible* editable parameters
+    /// (i.e. at least one def whose name isn't `(unused)`).
     pub fn has_params(&self) -> bool {
-        !self.defs.is_empty()
+        self.visible_indices().next().is_some()
+    }
+
+    /// Iterator over indices of defs that should be shown in the UI and
+    /// reachable by the cursor. Filters out the `(unused)` placeholder
+    /// rows that exist only to keep `params[i]` aligned with the shader's
+    /// `param(Nu)` slots.
+    pub fn visible_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.defs
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.name != "(unused)")
+            .map(|(i, _)| i)
     }
 
     pub fn select_up(&mut self) {
-        if self.defs.is_empty() { return; }
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        } else {
-            self.cursor = self.defs.len() - 1;
-        }
+        let visible: Vec<usize> = self.visible_indices().collect();
+        if visible.is_empty() { return; }
+        let pos = visible.iter().position(|&i| i == self.cursor).unwrap_or(0);
+        let next = if pos == 0 { visible.len() - 1 } else { pos - 1 };
+        self.cursor = visible[next];
     }
     pub fn select_down(&mut self) {
-        if self.defs.is_empty() { return; }
-        self.cursor = (self.cursor + 1) % self.defs.len();
+        let visible: Vec<usize> = self.visible_indices().collect();
+        if visible.is_empty() { return; }
+        let pos = visible.iter().position(|&i| i == self.cursor).unwrap_or(0);
+        let next = (pos + 1) % visible.len();
+        self.cursor = visible[next];
     }
     pub fn nudge(&mut self, dir: i32, fast: bool) {
         if self.cursor >= self.defs.len() { return; }
@@ -131,15 +152,18 @@ impl ParamsOverlay {
         // Header
         s.push_str(&format!("── PARAMS · {} ──\n\n", st.effect));
 
-        if st.defs.is_empty() {
+        let visible: Vec<usize> = st.visible_indices().collect();
+        if visible.is_empty() {
             // Info mode: effect has no tweakable params at all (e.g.
             // mandelbrot_zoom). Still show the overlay so `E` has visible
             // feedback, plus the dismiss key.
             s.push_str("  (this effect has no editable parameters)\n");
             s.push_str("\n  Esc / E   close\n");
         } else {
-            // Param list
-            for (i, def) in st.defs.iter().enumerate() {
+            // Param list — only the user-facing rows; (unused) shader
+            // slots are silently kept in the array for index alignment.
+            for &i in &visible {
+                let def = &st.defs[i];
                 let marker = if i == st.cursor { "▶" } else { " " };
                 let frac = ((st.values[i] - def.min) / (def.max - def.min)).clamp(0.0, 1.0);
                 let filled = (frac * BAR_W as f32).round() as usize;

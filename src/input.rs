@@ -29,12 +29,32 @@ pub enum Action {
     ParamEditRight(bool),
     ParamEditConfirm,
     ParamEditCancel,
+    // Autopilot scene duration nudges (`[` / `]`)
+    SceneDurationDown,
+    SceneDurationUp,
+    // Effects enable/disable menu
+    ToggleEffectsMenu,
+    EffectsMenuUp,
+    EffectsMenuDown,
+    EffectsMenuToggle,
+    EffectsMenuConfirm,
+    EffectsMenuCancel,
+    // Global settings overlay (G)
+    ToggleGlobalSettings,
+    GlobalSettingsUp,
+    GlobalSettingsDown,
+    GlobalSettingsLeft(bool),  // bool = fast (Shift held)
+    GlobalSettingsRight(bool),
+    GlobalSettingsConfirm,
+    GlobalSettingsCancel,
 }
 
 pub struct InputHandler {
     pub picker_open: bool,
     pub text_input_open: bool,
     pub param_editor_open: bool,
+    pub effects_menu_open: bool,
+    pub global_settings_open: bool,
     pub shift_held: bool,
 }
 
@@ -44,6 +64,8 @@ impl InputHandler {
             picker_open: false,
             text_input_open: false,
             param_editor_open: false,
+            effects_menu_open: false,
+            global_settings_open: false,
             shift_held: false,
         }
     }
@@ -65,6 +87,37 @@ impl InputHandler {
         // A always toggles the picker regardless of mode
         if key == KeyCode::KeyA {
             return Some(Action::ToggleAudioPicker);
+        }
+
+        // Effects menu consumes nav keys exclusively while open. Plain
+        // arrows move the cursor; Shift+arrows nudge the autopilot scene
+        // duration so the user can tune both without leaving the menu.
+        if self.effects_menu_open {
+            return match key {
+                KeyCode::ArrowUp if self.shift_held => Some(Action::SceneDurationUp),
+                KeyCode::ArrowDown if self.shift_held => Some(Action::SceneDurationDown),
+                KeyCode::ArrowUp => Some(Action::EffectsMenuUp),
+                KeyCode::ArrowDown => Some(Action::EffectsMenuDown),
+                KeyCode::Space => Some(Action::EffectsMenuToggle),
+                KeyCode::Enter | KeyCode::NumpadEnter => Some(Action::EffectsMenuConfirm),
+                KeyCode::Escape => Some(Action::EffectsMenuCancel),
+                KeyCode::KeyM => Some(Action::ToggleEffectsMenu),
+                _ => None,
+            };
+        }
+
+        // Global settings overlay consumes nav keys exclusively while open.
+        if self.global_settings_open {
+            return match key {
+                KeyCode::ArrowUp => Some(Action::GlobalSettingsUp),
+                KeyCode::ArrowDown => Some(Action::GlobalSettingsDown),
+                KeyCode::ArrowLeft => Some(Action::GlobalSettingsLeft(self.shift_held)),
+                KeyCode::ArrowRight => Some(Action::GlobalSettingsRight(self.shift_held)),
+                KeyCode::Enter | KeyCode::NumpadEnter => Some(Action::GlobalSettingsConfirm),
+                KeyCode::Escape => Some(Action::GlobalSettingsCancel),
+                KeyCode::KeyG => Some(Action::ToggleGlobalSettings),
+                _ => None,
+            };
         }
 
         // Param editor consumes nav keys exclusively while open.
@@ -111,16 +164,23 @@ impl InputHandler {
             KeyCode::Digit7 => Some(Action::JumpTo(7)),
             KeyCode::Digit8 => Some(Action::JumpTo(8)),
             KeyCode::Digit9 => Some(Action::JumpTo(9)),
-            KeyCode::Equal | KeyCode::NumpadAdd | KeyCode::ArrowUp => Some(Action::SensitivityUp),
-            KeyCode::Minus | KeyCode::NumpadSubtract | KeyCode::ArrowDown => {
-                Some(Action::SensitivityDown)
-            }
+            // Arrows are the universal "nudge" gesture. Plain arrows tune
+            // sensitivity (the most-touched continuous knob); Shift+arrows
+            // tune the autopilot scene duration. This avoids any
+            // bracket/symbol keys that aren't reachable on ISO Nordic
+            // layouts without AltGr.
+            KeyCode::ArrowUp if self.shift_held => Some(Action::SceneDurationUp),
+            KeyCode::ArrowDown if self.shift_held => Some(Action::SceneDurationDown),
+            KeyCode::ArrowUp => Some(Action::SensitivityUp),
+            KeyCode::ArrowDown => Some(Action::SensitivityDown),
             KeyCode::KeyP => Some(Action::CyclePostMode),
             KeyCode::KeyH => Some(Action::ToggleHelp),
             KeyCode::KeyF => Some(Action::ToggleFullscreen),
             KeyCode::KeyW => Some(Action::ToggleWindowed),
             KeyCode::KeyT => Some(Action::ToggleTextInput),
             KeyCode::KeyE => Some(Action::ToggleParamEditor),
+            KeyCode::KeyM => Some(Action::ToggleEffectsMenu),
+            KeyCode::KeyG => Some(Action::ToggleGlobalSettings),
             KeyCode::KeyQ | KeyCode::Escape => Some(Action::Quit),
             _ => None,
         }

@@ -29,21 +29,55 @@ pub fn load(path: &str, cli: &Cli) -> Config {
 }
 
 fn load_file(path: &str) -> Config {
-    // Try user-specified path, then XDG config dir, then embedded default
-    let content = std::fs::read_to_string(path)
-        .or_else(|_| {
-            let xdg = dirs_config();
-            std::fs::read_to_string(xdg)
-        })
+    // Base layer: user-supplied `-c` path, falling back to the embedded
+    // default shipped in the repo. This provides the "shape" of the config
+    // (visuals, audio defaults, mirror pool, etc.).
+    let base_str = std::fs::read_to_string(path)
         .unwrap_or_else(|_| include_str!("../../config.json").to_string());
+    let mut base: serde_json::Value = serde_json::from_str(&base_str)
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to parse base config: {}. Using empty.", e);
+            serde_json::json!({})
+        });
 
-    serde_json::from_str(&content).unwrap_or_else(|e| {
-        log::warn!("Failed to parse config: {}. Using defaults.", e);
+    // Overlay: the XDG file holds user state that should survive code
+    // iterations — edited params, DJ name, audio device, scene duration,
+    // disabled-effects deny list. Merging shallowly means new base fields
+    // still flow through on rebuilds, and stale XDG fields are tolerated.
+    if let Ok(xdg_str) = std::fs::read_to_string(dirs_config()) {
+        if let Ok(xdg_val) = serde_json::from_str::<serde_json::Value>(&xdg_str) {
+            if let (Some(base_obj), Some(xdg_obj)) = (base.as_object_mut(), xdg_val.as_object()) {
+                for (k, v) in xdg_obj {
+                    // Special-case fx_params: do a per-effect merge so that
+                    // values from either layer win individually. The base
+                    // provides baseline params for new effects; the XDG
+                    // layer holds the user's tweaks on top.
+                    if k == "fx_params" {
+                        if let Some(v_obj) = v.as_object() {
+                            let entry = base_obj
+                                .entry("fx_params".to_string())
+                                .or_insert_with(|| serde_json::json!({}));
+                            if let Some(entry_obj) = entry.as_object_mut() {
+                                for (fx, params) in v_obj {
+                                    entry_obj.insert(fx.clone(), params.clone());
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    base_obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    serde_json::from_value(base).unwrap_or_else(|e| {
+        log::warn!("Failed to finalize config: {}. Using defaults.", e);
         Config::default()
     })
 }
 
-fn dirs_config() -> String {
+pub fn dirs_config() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     format!("{}/.config/vgalizer/config.json", home)
 }
@@ -85,6 +119,76 @@ pub fn write_fx_param(path: &str, effect: &str, name: &str, value: f32) -> std::
     }
     json["fx_params"][effect][name] =
         serde_json::Value::from(((value * 10000.0).round() / 10000.0) as f64);
+
+    let pretty = serde_json::to_string_pretty(&json)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    let tmp = format!("{}.tmp", path);
+    std::fs::write(&tmp, &pretty)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Persist a batch of top-level JSON-valued fields to the XDG config in a
+/// single atomic write. Used by the G global-settings menu so all eight
+/// knobs land in one tmp→rename instead of eight.
+pub fn write_xdg_fields(updates: &[(&str, serde_json::Value)]) -> std::io::Result<()> {
+    let path = dirs_config();
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let mut json: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    for (k, v) in updates {
+        json[*k] = v.clone();
+    }
+
+    let pretty = serde_json::to_string_pretty(&json)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    let tmp = format!("{}.tmp", path);
+    std::fs::write(&tmp, &pretty)?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Persist the autopilot scene duration (in seconds) to the XDG config.
+pub fn write_scene_duration(secs: f64) -> std::io::Result<()> {
+    let path = dirs_config();
+    write_json_field(&path, "scene_duration", serde_json::json!(secs))
+}
+
+/// Persist the disabled-effects deny list to the XDG config. Pass `None`
+/// (or an empty slice) to clear the field (= all effects enabled).
+///
+/// Using a deny list means new effects added in code updates are always
+/// enabled by default — the user only has to remember what they turned off.
+pub fn write_disabled_effects(disabled: Option<&[String]>) -> std::io::Result<()> {
+    let path = dirs_config();
+    let value = match disabled {
+        Some(list) if !list.is_empty() => serde_json::Value::Array(
+            list.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+        ),
+        _ => serde_json::Value::Null,
+    };
+    write_json_field(&path, "disabled_effects", value)
+}
+
+/// Generic helper: set a single top-level JSON-valued field in the config,
+/// preserving all other fields, atomic tmp→rename.
+fn write_json_field(path: &str, key: &str, value: serde_json::Value) -> std::io::Result<()> {
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+
+    let mut json: serde_json::Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    json[key] = value;
 
     let pretty = serde_json::to_string_pretty(&json)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;

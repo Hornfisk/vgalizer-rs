@@ -23,35 +23,41 @@ pub struct ParamEditState {
 
 impl ParamEditState {
     /// Open the editor for `effect`, seeding values from the supplied
-    /// `EffectUniforms.params` array.
-    pub fn open(effect: &str, current_params: &[f32; 16]) -> Option<Self> {
+    /// `EffectUniforms.params` array. Returns `Some` even when the effect
+    /// has no editable params — the overlay then renders an "(no editable
+    /// parameters)" info screen so the `E` keypress always has feedback.
+    pub fn open(effect: &str, current_params: &[f32; 16]) -> Self {
         let defs = effect_params(effect);
-        if defs.is_empty() {
-            return None;
-        }
         let values: Vec<f32> = defs
             .iter()
             .enumerate()
             .map(|(i, d)| current_params[i].clamp(d.min, d.max))
             .collect();
-        Some(Self {
+        Self {
             effect: effect.to_string(),
             defs,
             values: values.clone(),
             original: values,
             cursor: 0,
-        })
+        }
+    }
+
+    /// Whether this editor session has any editable parameters at all.
+    pub fn has_params(&self) -> bool {
+        !self.defs.is_empty()
     }
 
     pub fn select_up(&mut self) {
+        if self.defs.is_empty() { return; }
         if self.cursor > 0 {
             self.cursor -= 1;
         } else {
-            self.cursor = self.defs.len().saturating_sub(1);
+            self.cursor = self.defs.len() - 1;
         }
     }
     pub fn select_down(&mut self) {
-        self.cursor = (self.cursor + 1) % self.defs.len().max(1);
+        if self.defs.is_empty() { return; }
+        self.cursor = (self.cursor + 1) % self.defs.len();
     }
     pub fn nudge(&mut self, dir: i32, fast: bool) {
         if self.cursor >= self.defs.len() { return; }
@@ -119,22 +125,41 @@ impl ParamsOverlay {
     }
 
     pub fn update_text(&mut self, st: &ParamEditState) {
+        const BAR_W: usize = 16;
         let mut s = String::new();
-        s.push_str(&format!("─ {} ─\n", st.effect));
-        for (i, def) in st.defs.iter().enumerate() {
-            let marker = if i == st.cursor { ">" } else { " " };
-            // 12-step bar showing position in [min..max]
-            let frac = ((st.values[i] - def.min) / (def.max - def.min)).clamp(0.0, 1.0);
-            let filled = (frac * 12.0).round() as usize;
-            let bar: String = (0..12)
-                .map(|c| if c < filled { '█' } else { '·' })
-                .collect();
-            s.push_str(&format!(
-                "{} {:<11}  {}  {:.2}\n",
-                marker, def.name, bar, st.values[i]
-            ));
+
+        // Header
+        s.push_str(&format!("── PARAMS · {} ──\n\n", st.effect));
+
+        if st.defs.is_empty() {
+            // Info mode: effect has no tweakable params at all (e.g.
+            // mandelbrot_zoom). Still show the overlay so `E` has visible
+            // feedback, plus the dismiss key.
+            s.push_str("  (this effect has no editable parameters)\n");
+            s.push_str("\n  Esc / E   close\n");
+        } else {
+            // Param list
+            for (i, def) in st.defs.iter().enumerate() {
+                let marker = if i == st.cursor { "▶" } else { " " };
+                let frac = ((st.values[i] - def.min) / (def.max - def.min)).clamp(0.0, 1.0);
+                let filled = (frac * BAR_W as f32).round() as usize;
+                let bar: String = (0..BAR_W)
+                    .map(|c| if c < filled { '█' } else { '·' })
+                    .collect();
+                let pct = (frac * 100.0).round() as i32;
+                let dirty = if (st.values[i] - st.original[i]).abs() > 1e-6 { "*" } else { " " };
+                s.push_str(&format!(
+                    "{} {} {:<11}  {}  {:>3}%   {:.2}\n",
+                    marker, dirty, def.name, bar, pct, st.values[i]
+                ));
+            }
+
+            // Hotkey legend — grouped, all on one line where they fit.
+            s.push_str("\n  ↑/↓  select param");
+            s.push_str("\n  ←/→  nudge       (Shift  ×10 step)");
+            s.push_str("\n  Enter save        Esc / E  cancel");
+            s.push_str("\n  *    = unsaved change");
         }
-        s.push_str("\n↑↓ select   ←→ nudge (Shift ×10)   Enter save   Esc cancel");
 
         self.buffer.set_text(
             &mut self.font_system,

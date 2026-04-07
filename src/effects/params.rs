@@ -26,6 +26,94 @@ const fn p(name: &'static str, min: f32, max: f32, default: f32, step: f32) -> P
 // The shader maps that to the actual physical range (e.g. param(0u)*8.0).
 // Defaults below are tuned to the "looks good with no tweaking" point.
 
+// === v1 effects ===
+
+const HYPERSPACE: &[ParamDef] = &[
+    p("speed",      0.0, 1.0, 0.5, 0.05),  // 0.5..1.5x time multiplier
+];
+
+const KALEIDO: &[ParamDef] = &[
+    p("spokes",     0.0, 1.0, 0.5, 0.05),  // 3..4
+    p("rings",      0.0, 1.0, 0.5, 0.05),  // 3..4
+    p("rot_speed",  0.0, 1.0, 0.5, 0.05),  // 0.3..0.8
+];
+
+const RING_TUNNEL: &[ParamDef] = &[
+    p("rings",      0.0, 1.0, 0.5, 0.05),  // 4..5
+    p("speed",      0.0, 1.0, 0.5, 0.05),  // 0.4..0.8
+    p("shape",      0.0, 1.0, 0.5, 0.05),
+    p("rot_speed",  0.0, 1.0, 0.5, 0.05),  // 0..0.5
+];
+
+const WARP_GRID: &[ParamDef] = &[
+    p("cols",       0.0, 1.0, 0.5, 0.05),  // 6..7
+    p("rows",       0.0, 1.0, 0.5, 0.05),  // 6..7
+    p("amp",        0.0, 1.0, 0.5, 0.05),  // 0.05..0.13
+    p("freq",       0.0, 1.0, 0.5, 0.05),  // 2..5
+];
+
+const MORPH_GEO: &[ParamDef] = &[
+    p("layers",     0.0, 1.0, 0.5, 0.05),  // 2..3
+    p("sides",      0.0, 1.0, 0.5, 0.05),  // 3..4
+];
+
+const SPECTRUM_BARS: &[ParamDef] = &[
+    p("(unused)",   0.0, 1.0, 0.5, 0.05),
+    p("height",     0.0, 1.0, 0.5, 0.05),  // 0.55..0.85
+    p("glow",       0.0, 1.0, 0.5, 0.05),  // 0.30..0.70
+];
+
+const SPECTRUM_ORBIT: &[ParamDef] = &[
+    p("inner_r",    0.0, 1.0, 0.4, 0.05),  // 0.18..0.23
+    p("bar_len",    0.0, 1.0, 0.5, 0.05),  // 0.22..0.32
+    p("rot_speed",  0.0, 1.0, 0.5, 0.05),  // 0..0.30
+];
+
+const SPECTRUM_TERRAIN: &[ParamDef] = &[
+    p("height",     0.0, 1.0, 0.5, 0.05),  // 0.45..0.65
+    p("glow",       0.0, 1.0, 0.5, 0.05),  // 0.40..0.70
+];
+
+const SPECTRUM_WAVE: &[ParamDef] = &[
+    p("lines",      0.0, 1.0, 0.5, 0.05),  // 4..5
+    p("amp",        0.0, 1.0, 0.5, 0.05),  // 0.08..0.16
+    p("freq",       0.0, 1.0, 0.5, 0.05),  // 2..4
+];
+
+// === v2 additions ===
+
+const LINE_MOIRE: &[ParamDef] = &[
+    p("ang_jitter", 0.0, 1.0, 0.5, 0.05),
+    p("spacing",    0.0, 1.0, 0.5, 0.05),
+    p("ang_a",      0.0, 1.0, 0.5, 0.05),
+    p("ang_b",      0.0, 1.0, 0.5, 0.05),
+];
+
+const STRANGE_ATTRACTOR: &[ParamDef] = &[
+    p("a",          0.0, 1.0, 0.5, 0.05),
+    p("b",          0.0, 1.0, 0.5, 0.05),
+    p("c",          0.0, 1.0, 0.5, 0.05),
+    p("d",          0.0, 1.0, 0.5, 0.05),
+];
+
+const WIRE_TUNNEL: &[ParamDef] = &[
+    p("stripes",    0.0, 1.0, 0.4, 0.05),  // 16..64
+    p("twist",      0.0, 1.0, 0.5, 0.05),
+    p("dash_freq",  0.0, 1.0, 0.4, 0.05),  // 0.5..4.0
+    p("dash_mix",   0.0, 1.0, 0.5, 0.05),
+    p("thickness",  0.0, 1.0, 0.4, 0.05),  // 0.012..0.030
+    p("roll",       0.0, 1.0, 0.5, 0.05),
+    p("warp",       0.0, 1.0, 0.4, 0.05),  // 0.06..0.20
+    p("speed",      0.0, 1.0, 0.5, 0.05),  // 1.5..4.0
+];
+
+const VORONOI_PULSE: &[ParamDef] = &[
+    p("traj_x",     0.0, 1.0, 0.5, 0.05),
+    p("traj_y",     0.0, 1.0, 0.5, 0.05),
+];
+
+// === v3 additions ===
+
 const VECTOR_TERRAIN: &[ParamDef] = &[
     p("horizon",    0.0, 1.0, 0.4, 0.05),  // 0.50..0.80
     p("(unused)",   0.0, 1.0, 0.5, 0.05),
@@ -132,18 +220,35 @@ const CYMATICS: &[ParamDef] = &[
 
 pub fn effect_params(effect: &str) -> &'static [ParamDef] {
     match effect {
-        "vector_terrain" => VECTOR_TERRAIN,
-        "laser_burst"    => LASER_BURST,
-        "scope_xy"       => SCOPE_XY,
-        "wave_dunes"     => WAVE_DUNES,
-        "radial_eq"      => RADIAL_EQ,
-        "harmonograph"   => HARMONOGRAPH,
-        "tv_acid"        => TV_ACID,
-        "kaleido_warp"   => KALEIDO_WARP,
-        "isoline_field"  => ISOLINE_FIELD,
-        "moebius_grid"   => MOEBIUS_GRID,
-        "cymatics"       => CYMATICS,
-        "vector_rabbit"  => VECTOR_RABBIT,
+        // v1
+        "hyperspace"        => HYPERSPACE,
+        "kaleido"           => KALEIDO,
+        "ring_tunnel"       => RING_TUNNEL,
+        "warp_grid"         => WARP_GRID,
+        "morph_geo"         => MORPH_GEO,
+        "spectrum_bars"     => SPECTRUM_BARS,
+        "spectrum_orbit"    => SPECTRUM_ORBIT,
+        "spectrum_terrain"  => SPECTRUM_TERRAIN,
+        "spectrum_wave"     => SPECTRUM_WAVE,
+        // v2
+        "line_moire"        => LINE_MOIRE,
+        "strange_attractor" => STRANGE_ATTRACTOR,
+        "wire_tunnel"       => WIRE_TUNNEL,
+        "voronoi_pulse"     => VORONOI_PULSE,
+        // mandelbrot_zoom is fully procedural (no param() reads) → no entry
+        // v3
+        "vector_terrain"    => VECTOR_TERRAIN,
+        "laser_burst"       => LASER_BURST,
+        "scope_xy"          => SCOPE_XY,
+        "wave_dunes"        => WAVE_DUNES,
+        "radial_eq"         => RADIAL_EQ,
+        "harmonograph"      => HARMONOGRAPH,
+        "tv_acid"           => TV_ACID,
+        "kaleido_warp"      => KALEIDO_WARP,
+        "isoline_field"     => ISOLINE_FIELD,
+        "moebius_grid"      => MOEBIUS_GRID,
+        "cymatics"          => CYMATICS,
+        "vector_rabbit"     => VECTOR_RABBIT,
         _ => &[],
     }
 }

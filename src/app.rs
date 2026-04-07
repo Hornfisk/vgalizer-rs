@@ -285,12 +285,11 @@ impl ApplicationHandler for App {
                                 let live = state.effects.current_params(&cur)
                                     .map(|p| p.params)
                                     .unwrap_or([0.0; 16]);
-                                if let Some(ed) = ParamEditState::open(&cur, &live) {
-                                    state.params_edit = Some(ed);
-                                    state.input.param_editor_open = true;
-                                } else {
-                                    log::info!("Effect '{}' has no editable params", cur);
-                                }
+                                // Always opens — the overlay shows an
+                                // info screen for effects with no
+                                // editable params (e.g. mandelbrot_zoom).
+                                state.params_edit = Some(ParamEditState::open(&cur, &live));
+                                state.input.param_editor_open = true;
                             }
                         }
                         Action::ParamEditUp => {
@@ -301,63 +300,71 @@ impl ApplicationHandler for App {
                         }
                         Action::ParamEditLeft(fast) => {
                             if let Some(ed) = &mut state.params_edit {
-                                ed.nudge(-1, fast);
-                                let mut params = crate::gpu::EffectUniforms {
-                                    params: ed.as_params_array(),
-                                    seed: 0.0, _pad: [0.0; 3],
-                                };
-                                if let Some(cur) = state.effects.current_params(&ed.effect) {
-                                    params.seed = cur.seed;
+                                if ed.has_params() {
+                                    ed.nudge(-1, fast);
+                                    let mut params = crate::gpu::EffectUniforms {
+                                        params: ed.as_params_array(),
+                                        seed: 0.0, _pad: [0.0; 3],
+                                    };
+                                    if let Some(cur) = state.effects.current_params(&ed.effect) {
+                                        params.seed = cur.seed;
+                                    }
+                                    let name = ed.effect.clone();
+                                    state.effects.update_effect_params(&state.gpu.queue, &name, &params);
                                 }
-                                let name = ed.effect.clone();
-                                state.effects.update_effect_params(&state.gpu.queue, &name, &params);
                             }
                         }
                         Action::ParamEditRight(fast) => {
                             if let Some(ed) = &mut state.params_edit {
-                                ed.nudge(1, fast);
-                                let mut params = crate::gpu::EffectUniforms {
-                                    params: ed.as_params_array(),
-                                    seed: 0.0, _pad: [0.0; 3],
-                                };
-                                if let Some(cur) = state.effects.current_params(&ed.effect) {
-                                    params.seed = cur.seed;
+                                if ed.has_params() {
+                                    ed.nudge(1, fast);
+                                    let mut params = crate::gpu::EffectUniforms {
+                                        params: ed.as_params_array(),
+                                        seed: 0.0, _pad: [0.0; 3],
+                                    };
+                                    if let Some(cur) = state.effects.current_params(&ed.effect) {
+                                        params.seed = cur.seed;
+                                    }
+                                    let name = ed.effect.clone();
+                                    state.effects.update_effect_params(&state.gpu.queue, &name, &params);
                                 }
-                                let name = ed.effect.clone();
-                                state.effects.update_effect_params(&state.gpu.queue, &name, &params);
                             }
                         }
                         Action::ParamEditConfirm => {
                             if let Some(ed) = state.params_edit.take() {
-                                // Persist each changed param to repo config.json
-                                for (i, def) in ed.defs.iter().enumerate() {
-                                    let v = ed.values[i];
-                                    if let Err(e) = crate::config::write_fx_param(
-                                        &self.config_path, &ed.effect, def.name, v,
-                                    ) {
-                                        log::warn!("Could not persist {}.{}: {}", ed.effect, def.name, e);
+                                if ed.has_params() {
+                                    // Persist each changed param to repo config.json
+                                    for (i, def) in ed.defs.iter().enumerate() {
+                                        let v = ed.values[i];
+                                        if let Err(e) = crate::config::write_fx_param(
+                                            &self.config_path, &ed.effect, def.name, v,
+                                        ) {
+                                            log::warn!("Could not persist {}.{}: {}", ed.effect, def.name, e);
+                                        }
+                                        // Mirror into in-memory config so hot-reload doesn't undo us
+                                        state.config.fx_params
+                                            .entry(ed.effect.clone())
+                                            .or_default()
+                                            .insert(def.name.to_string(), serde_json::json!(v as f64));
                                     }
-                                    // Mirror into in-memory config so hot-reload doesn't undo us
-                                    state.config.fx_params
-                                        .entry(ed.effect.clone())
-                                        .or_default()
-                                        .insert(def.name.to_string(), serde_json::json!(v as f64));
+                                    log::info!("Saved {} params to {}", ed.effect, self.config_path);
                                 }
-                                log::info!("Saved {} params to {}", ed.effect, self.config_path);
                                 state.input.param_editor_open = false;
                             }
                         }
                         Action::ParamEditCancel => {
                             if let Some(mut ed) = state.params_edit.take() {
-                                // Restore live values to the entry-time snapshot
-                                ed.restore_original();
-                                let params = crate::gpu::EffectUniforms {
-                                    params: ed.as_params_array(),
-                                    seed: state.effects.current_params(&ed.effect).map(|p| p.seed).unwrap_or(0.0),
-                                    _pad: [0.0; 3],
-                                };
-                                let name = ed.effect.clone();
-                                state.effects.update_effect_params(&state.gpu.queue, &name, &params);
+                                if ed.has_params() {
+                                    // Restore live values to the entry-time snapshot
+                                    ed.restore_original();
+                                    let params = crate::gpu::EffectUniforms {
+                                        params: ed.as_params_array(),
+                                        seed: state.effects.current_params(&ed.effect).map(|p| p.seed).unwrap_or(0.0),
+                                        _pad: [0.0; 3],
+                                    };
+                                    let name = ed.effect.clone();
+                                    state.effects.update_effect_params(&state.gpu.queue, &name, &params);
+                                }
                                 state.input.param_editor_open = false;
                             }
                         }

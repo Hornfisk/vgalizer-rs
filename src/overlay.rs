@@ -65,12 +65,23 @@ impl HudOverlay {
         sensitivity: f32,
         level: f32,
         scene_dur: f64,
+        stats_line: &str,
     ) {
         let bar = level_bar(level);
-        let text = format!(
-            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
-            effect, bpm, sensitivity, scene_dur, bar
-        );
+        // Three lines when stats are present: effect / stats / shortcuts.
+        // The middle line is the T5 HUD extension — FPS, CPU%, temps,
+        // RAM, GPU freq. Empty string skips the middle line entirely.
+        let text = if stats_line.is_empty() {
+            format!(
+                "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
+                effect, bpm, sensitivity, scene_dur, bar
+            )
+        } else {
+            format!(
+                "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\n{}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
+                effect, bpm, sensitivity, scene_dur, bar, stats_line
+            )
+        };
         // Skip the glyphon reshape if the string is byte-identical to the
         // last one. Avoids ~60 reshapes/sec of unchanged HUD content when
         // effect/bpm/sens/level/scene_dur haven't changed between frames.

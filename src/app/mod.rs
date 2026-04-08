@@ -24,6 +24,7 @@ use crate::effects::{manager::SceneManager, EffectRegistry};
 use crate::input::{Action, InputHandler};
 use crate::overlay::HudOverlay;
 use crate::postprocess::PostProcessChain;
+use crate::system_stats::SystemStats;
 use crate::text::{
     NameOverlay, ParamEditState, ParamsOverlay, TextInputOverlay,
     VjeEffectsFocus, VjeOverlay, VjeOverlayState, VjeTab,
@@ -103,6 +104,9 @@ pub(super) struct AppState {
     pub(super) _audio_stream: Option<crate::audio::capture::AudioStreamHandle>,
     pub(super) config_watcher: Option<crate::config::ConfigWatcher>,
     pub(super) config: Config,
+    /// Live system metrics sampled at 1 Hz by a background thread and
+    /// published via atomics. See `src/system_stats.rs` (T5).
+    pub(super) system_stats: Arc<SystemStats>,
 
     // Timing
     pub(super) start: Instant,
@@ -315,6 +319,7 @@ impl ApplicationHandler for App {
             _audio_stream: stream, // kept alive to prevent drop/stop
             config_watcher,
             config: self.config.clone(),
+            system_stats: SystemStats::new(),
             start: Instant::now(),
             last_frame: Instant::now(),
             last_beat_t: 0.0,

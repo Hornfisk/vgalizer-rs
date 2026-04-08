@@ -124,6 +124,8 @@ pub(super) fn render_frame(state: &mut AppState) {
             "perf: {:.1} fps  p50={:.2}ms  p99={:.2}ms",
             fps, p50, p99
         );
+        // Publish the rolling-window FPS to the HUD stats block (T5).
+        state.system_stats.set_fps(fps);
         state.frame_count = 0;
         state.perf_window_start = now;
         state.frame_times_ms.clear();
@@ -263,13 +265,19 @@ pub(super) fn render_frame(state: &mut AppState) {
     // Update name overlay animation
     state.name_overlay.update(beat_state.beat, state.pulse);
 
-    // HUD text
+    // HUD text — includes the T5 live system stats line between the
+    // effect line and the shortcut hint. The cache in HudOverlay skips
+    // the glyphon reshape when the text is byte-identical, so the
+    // per-frame stats formatting only triggers a real reshape when one
+    // of FPS / CPU / temp / RAM / GPU changes.
+    let stats_line = state.system_stats.format_line();
     state.hud.update_text(
         &effect_name,
         beat_state.bpm,
         state.sensitivity,
         level,
         state.scene.scene_duration(),
+        &stats_line,
     );
 
     // Acquire swapchain frame

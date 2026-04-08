@@ -355,6 +355,7 @@ pub fn start_capture(
                     let (level, bands) = analyzer.process(data, channels);
                     audio_state.store_level(level);
                     audio_state.store_bands(&bands);
+                    audio_state.store_kick_flux(analyzer.kick_flux());
                 },
                 |err| log::error!("Audio stream error: {}", err),
                 None,
@@ -437,6 +438,10 @@ fn spawn_subprocess_capture(
         let mut analyzer = AudioAnalyzer::new(44100);
         // 512 stereo f32 frames = 4096 bytes
         let mut buf = vec![0u8; 4096];
+        // Pre-allocated f32 scratch, reused across blocks. Same length
+        // as `buf / 4` (one f32 per 4 bytes). Avoids a per-block Vec
+        // allocation in the subprocess reader thread.
+        let mut samples: Vec<f32> = vec![0.0; buf.len() / 4];
         let mut reader = std::io::BufReader::with_capacity(65536, stdout);
         loop {
             // Fill entire buffer before processing to get consistent chunk sizes.
@@ -448,13 +453,13 @@ fn spawn_subprocess_capture(
                     Err(_) => return,
                 }
             }
-            let samples: Vec<f32> = buf
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-                .collect();
+            for (i, chunk) in buf.chunks_exact(4).enumerate() {
+                samples[i] = f32::from_le_bytes(chunk.try_into().unwrap());
+            }
             let (level, bands) = analyzer.process(&samples, 2);
             audio_state.store_level(level);
             audio_state.store_bands(&bands);
+            audio_state.store_kick_flux(analyzer.kick_flux());
         }
     });
 

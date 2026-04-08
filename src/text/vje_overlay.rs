@@ -153,6 +153,14 @@ pub struct VjeOverlayState {
     pub original_config: Box<Config>,
 
     pub status: String,
+
+    /// True when the glyphon text buffer needs to be rebuilt this
+    /// frame. Set on every mutation (navigation, edit, tab switch,
+    /// status update, etc.) and cleared at the end of
+    /// `VjeOverlay::update_text`. When the overlay is open but
+    /// nothing changed, `update_text` early-returns and we save the
+    /// per-frame string-build + glyphon layout work (~0.1 ms).
+    pub needs_repaint: bool,
 }
 
 impl VjeOverlayState {
@@ -169,7 +177,17 @@ impl VjeOverlayState {
             dirty_disabled: false,
             original_config: Box::new(config.clone()),
             status: "press ? for help".to_string(),
+            // First frame must repaint so the initial layout draws.
+            needs_repaint: true,
         }
+    }
+
+    /// Set the transient status line and flag the buffer for repaint.
+    /// Use this instead of assigning `st.status` directly from outside
+    /// the struct so the repaint flag stays consistent.
+    pub fn set_status(&mut self, s: impl Into<String>) {
+        self.status = s.into();
+        self.needs_repaint = true;
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -201,6 +219,7 @@ impl VjeOverlayState {
             VjeTab::Globals => VjeTab::Effects,
         };
         self.status.clear();
+        self.needs_repaint = true;
     }
 
     // --- Effects tab navigation --------------------------------------------
@@ -213,22 +232,26 @@ impl VjeOverlayState {
             self.effect_cursor - 1
         };
         self.param_cursor = 0;
+        self.needs_repaint = true;
     }
 
     pub fn effect_list_down(&mut self) {
         if EFFECT_NAMES.is_empty() { return; }
         self.effect_cursor = (self.effect_cursor + 1) % EFFECT_NAMES.len();
         self.param_cursor = 0;
+        self.needs_repaint = true;
     }
 
     pub fn focus_params(&mut self) {
         if !self.visible_params().is_empty() {
             self.effects_focus = VjeEffectsFocus::Params;
+            self.needs_repaint = true;
         }
     }
 
     pub fn focus_list(&mut self) {
         self.effects_focus = VjeEffectsFocus::List;
+        self.needs_repaint = true;
     }
 
     pub fn swap_effects_focus(&mut self) {
@@ -242,12 +265,14 @@ impl VjeOverlayState {
         let n = self.visible_params().len();
         if n == 0 { return; }
         self.param_cursor = if self.param_cursor == 0 { n - 1 } else { self.param_cursor - 1 };
+        self.needs_repaint = true;
     }
 
     pub fn param_down(&mut self) {
         let n = self.visible_params().len();
         if n == 0 { return; }
         self.param_cursor = (self.param_cursor + 1) % n;
+        self.needs_repaint = true;
     }
 
     // --- Effects tab mutations ---------------------------------------------
@@ -261,6 +286,7 @@ impl VjeOverlayState {
         let defs = self.visible_params();
         let Some(def) = defs.get(self.param_cursor).copied() else {
             self.status = format!("{} has no editable params", effect);
+            self.needs_repaint = true;
             return;
         };
         let cur = read_param(cfg, &effect, def.name, def.default);
@@ -269,6 +295,7 @@ impl VjeOverlayState {
         write_param(cfg, &effect, def.name, next);
         self.dirty_params.insert(format!("{}.{}", effect, def.name));
         self.status = format!("{}.{} = {:.3}", effect, def.name, next);
+        self.needs_repaint = true;
     }
 
     pub fn reset_current_param(&mut self, cfg: &mut Config) {
@@ -278,6 +305,7 @@ impl VjeOverlayState {
         write_param(cfg, &effect, def.name, def.default);
         self.dirty_params.insert(format!("{}.{}", effect, def.name));
         self.status = format!("{}.{} reset → {:.3}", effect, def.name, def.default);
+        self.needs_repaint = true;
     }
 
     /// Toggle the disabled marker on the effect under the cursor.
@@ -294,6 +322,7 @@ impl VjeOverlayState {
         }
         cfg.disabled_effects = if list.is_empty() { None } else { Some(list) };
         self.dirty_disabled = true;
+        self.needs_repaint = true;
     }
 
     // --- Globals tab -------------------------------------------------------
@@ -302,12 +331,14 @@ impl VjeOverlayState {
         let n = globals_row_count();
         if n == 0 { return; }
         self.global_cursor = if self.global_cursor == 0 { n - 1 } else { self.global_cursor - 1 };
+        self.needs_repaint = true;
     }
 
     pub fn global_down(&mut self) {
         let n = globals_row_count();
         if n == 0 { return; }
         self.global_cursor = (self.global_cursor + 1) % n;
+        self.needs_repaint = true;
     }
 
     pub fn nudge_global(&mut self, cfg: &mut Config, dir: i32, fast: bool) {
@@ -329,6 +360,7 @@ impl VjeOverlayState {
             let (cur, _, _) = extra.read(cfg);
             self.status = format!("{} = {:.2}", extra.label(), cur);
         }
+        self.needs_repaint = true;
     }
 
     pub fn reset_global(&mut self, cfg: &mut Config) {
@@ -351,6 +383,7 @@ impl VjeOverlayState {
             self.dirty_globals.insert(extra.config_key().to_string());
             self.status = format!("{} reset", extra.label());
         }
+        self.needs_repaint = true;
     }
 
     // --- Commit ------------------------------------------------------------
@@ -398,6 +431,9 @@ impl VjeOverlayState {
         self.dirty_params.clear();
         self.dirty_globals.clear();
         self.dirty_disabled = false;
+        // The "* MODIFIED" badge in the title bar disappears, so we
+        // need to redraw.
+        self.needs_repaint = true;
     }
 }
 
@@ -474,9 +510,15 @@ impl VjeOverlay {
     }
 
     /// Re-flow the entire panel as a single monospace string. Called every
-    /// frame while the overlay is open. Cheap relative to the GPU frame
-    /// cost; no attempt at per-row diffing.
+    /// frame while the overlay is open, but no-ops unless `st.needs_repaint`
+    /// is set — panel layout only changes in response to user input, so
+    /// on idle frames we keep the previously-set glyphon buffer and skip
+    /// the ~0.1 ms string build + layout cost.
     pub fn update_text(&mut self, st: &mut VjeOverlayState, cfg: &Config) {
+        if !st.needs_repaint {
+            return;
+        }
+
         // Keep the scroll window around the cursor.
         if st.effect_cursor < st.effect_list_offset {
             st.effect_list_offset = st.effect_cursor;
@@ -514,6 +556,8 @@ impl VjeOverlay {
             Shaping::Basic,
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
+
+        st.needs_repaint = false;
     }
 
     /// Draw the overlay into `target`. `panel_rect` is the pixel rect on

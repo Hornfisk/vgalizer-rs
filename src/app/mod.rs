@@ -674,7 +674,7 @@ impl ApplicationHandler for App {
                             if let Some(st) = &mut state.vje_state {
                                 let updates_owned = st.build_updates(&state.config);
                                 if updates_owned.is_empty() {
-                                    st.status = "nothing to commit".to_string();
+                                    st.set_status("nothing to commit");
                                 } else {
                                     // write_xdg_fields takes &[(&str, Value)], so
                                     // borrow the owned String keys.
@@ -686,11 +686,11 @@ impl ApplicationHandler for App {
                                         Ok(()) => {
                                             let n = updates_ref.len();
                                             st.mark_committed();
-                                            st.status = format!("committed {} field(s)", n);
+                                            st.set_status(format!("committed {} field(s)", n));
                                             log::info!("vje overlay: committed {} fields", n);
                                         }
                                         Err(e) => {
-                                            st.status = format!("commit failed: {}", e);
+                                            st.set_status(format!("commit failed: {}", e));
                                             log::warn!("vje overlay: commit failed: {}", e);
                                         }
                                     }

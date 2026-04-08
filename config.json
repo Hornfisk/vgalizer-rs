@@ -1,14 +1,14 @@
 {
   "audio_device": null,
   "beat_sensitivity": 1.4,
-  "dj_name": "DJ NAME",
+  "dj_name": "MOISEXXX",
   "fullscreen": true,
   "fx_params": {
     "cymatics": {
       "(unused)": 0.0,
-      "grain": 0.0,
-      "hue_phase": 0.0,
-      "plate_zoom": 1.0
+      "grain": 1.0,
+      "hue_phase": 1.0,
+      "plate_zoom": 0.5
     },
     "harmonograph": {
       "freq_a": 0.0,
@@ -22,41 +22,41 @@
     },
     "isoline_field": {
       "(unused)": 0.0,
-      "hue": 0.0,
-      "spacing": 0.699999988079071
+      "hue": 0.25,
+      "spacing": 0.20000000298023224
     },
     "kaleido": {
       "rings": 1.0,
-      "rot_speed": 0.10000000149011612,
-      "spokes": 0.75
+      "rot_speed": 1.0,
+      "spokes": 1.0
     },
     "kaleido_warp": {
       "(unused)": 0.0,
       "hue": 0.25,
       "rot_speed": 0.0,
-      "segments": 0.0,
-      "warp_amt": 0.0
+      "segments": 0.05000000074505806,
+      "warp_amt": 0.15000000596046448
     },
     "laser_burst": {
       "beat_flash": 0.800000011920929,
       "hue": 1.0,
-      "ray_gain": 0.0,
-      "ray_thick": 0.4000000059604645,
+      "ray_gain": 1.0,
+      "ray_thick": 1.0,
       "strip_glow": 1.0,
-      "strip_h": 1.0
+      "strip_h": 0.0
     },
     "line_moire": {
-      "ang_a": 1.0,
+      "ang_a": 0.0,
       "ang_b": 1.0,
-      "ang_jitter": 0.550000011920929,
+      "ang_jitter": 1.0,
       "spacing": 1.0
     },
     "moebius_grid": {
-      "density": 0.0,
-      "drift": 0.5,
-      "hue": 0.25,
-      "pole_max": 0.0,
-      "rot_speed": 0.5
+      "density": 0.44999998807907104,
+      "drift": 1.0,
+      "hue": 0.15000000596046448,
+      "pole_max": 0.5,
+      "rot_speed": 0.10000000149011612
     },
     "morph_geo": {
       "layers": 1.0,
@@ -64,43 +64,43 @@
     },
     "radial_eq": {
       "(unused)": 0.0,
-      "hue": 0.550000011920929,
+      "hue": 0.8500000238418579,
       "inner_r": 1.0,
       "max_len": 1.0,
       "ring_glow": 1.0,
-      "thickness": 1.0
+      "thickness": 0.5
     },
     "ring_tunnel": {
       "rings": 0.0,
-      "rot_speed": 0.05000000074505806,
-      "shape": 0.8999999761581421,
-      "speed": 0.0
+      "rot_speed": 0.30000001192092896,
+      "shape": 1.0,
+      "speed": 0.5
     },
     "scope_xy": {
       "amp": 1.0,
       "glow": 0.0,
       "halo": 0.0,
-      "hue": 0.4000000059604645,
-      "ratio_a": 0.0,
+      "hue": 0.699999988079071,
+      "ratio_a": 0.05000000074505806,
       "ratio_b": 0.0
     },
     "spectrum_bars": {
       "(unused)": 0.6499999761581421,
-      "glow": 0.44999998807907104,
-      "height": 0.15000000596046448
+      "glow": 0.0,
+      "height": 0.10000000149011612
     },
     "spectrum_orbit": {
       "bar_len": 1.0,
       "inner_r": 1.0,
-      "rot_speed": 0.25
+      "rot_speed": 1.0
     },
     "spectrum_terrain": {
-      "glow": 0.75,
-      "height": 0.4000000059604645
+      "glow": 0.5,
+      "height": 1.0
     },
     "spectrum_wave": {
-      "amp": 0.550000011920929,
-      "freq": 0.6000000238418579,
+      "amp": 1.0,
+      "freq": 1.0,
       "lines": 1.0
     },
     "tv_acid": {
@@ -112,29 +112,29 @@
       "smiley_r": 1.0
     },
     "vector_rabbit": {
-      "breathe": 1.0,
-      "glitch": 0.0,
+      "breathe": 0.10000000149011612,
+      "glitch": 0.15000000596046448,
       "jitter": 1.0,
-      "rot_swing": 0.0,
-      "thickness": 1.0,
-      "tint": 0.0
+      "rot_swing": 1.0,
+      "thickness": 0.10000000149011612,
+      "tint": 0.8500000238418579
     },
     "vector_terrain": {
       "(unused)": 0.0,
-      "beat_kick": 0.0,
-      "height": 0.949999988079071,
-      "horizon": 0.949999988079071,
-      "scroll": 0.4000000059604645,
-      "wave_amt": 0.0
+      "beat_kick": 1.0,
+      "height": 0.10000000149011612,
+      "horizon": 0.15000000596046448,
+      "scroll": 0.0,
+      "wave_amt": 0.10000000149011612
     },
     "warp_grid": {
       "amp": 0.5,
-      "cols": 0.30000001192092896,
-      "freq": 0.0,
-      "rows": 0.6000000238418579
+      "cols": 0.949999988079071,
+      "freq": 1.0,
+      "rows": 1.0
     },
     "wave_dunes": {
-      "amp": 0.4000000059604645,
+      "amp": 1.0,
       "beat_amp": 1.0,
       "bottom_y": 1.0,
       "horizon_y": 0.5,
@@ -142,14 +142,23 @@
       "row_thick": 1.0
     },
     "wire_tunnel": {
-      "dash_freq": 0.949999988079071,
-      "dash_mix": 0.550000011920929,
-      "roll": 0.3499999940395355,
-      "speed": 0.949999988079071,
-      "stripes": 0.0,
+      "dash_freq": 0.0,
+      "dash_mix": 0.0,
+      "roll": 0.0,
+      "speed": 0.15000000596046448,
+      "stripes": 0.3499999940395355,
       "thickness": 0.0,
-      "twist": 1.0,
-      "warp": 0.6000000238418579
+      "twist": 0.0,
+      "warp": 0.05000000074505806
+    },
+    "mandelbrot_zoom": {
+      "color": 0.20000000298023224,
+      "detail": 0.3499999940395355,
+      "tempo": 0.0
+    },
+    "voronoi_pulse": {
+      "traj_x": 0.0,
+      "traj_y": 0.0
     }
   },
   "fx_speed_mult": 1.0,
@@ -167,11 +176,18 @@
     "kaleido"
   ],
   "mirror_spread": 8,
-  "scene_duration": 30.0,
+  "scene_duration": 300.0,
   "strobe_mode": "beat",
   "trail_alpha": 40,
   "vga_ca": 4,
   "vga_intensity": 0.3,
   "vga_noise": 0.15,
-  "vga_sync": 0.08
+  "vga_sync": 0.08,
+  "disabled_effects": [
+    "hyperspace",
+    "morph_geo",
+    "mandelbrot_zoom",
+    "scope_xy",
+    "harmonograph"
+  ]
 }

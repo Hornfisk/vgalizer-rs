@@ -142,6 +142,7 @@ impl ApplicationHandler for App {
             effect_names,
             &config.mirror_pool,
             config.scene_duration,
+            config.mirror_cycle_interval,
             config.disabled_effects.as_deref(),
         );
 
@@ -743,6 +744,13 @@ impl App {
                 if new_cfg.mirror_pool != state.config.mirror_pool {
                     log::info!("reload: mirror_pool changed -> {:?}", new_cfg.mirror_pool);
                     state.scene.set_mirror_pool(&new_cfg.mirror_pool);
+                }
+                if (new_cfg.mirror_cycle_interval - state.config.mirror_cycle_interval).abs() > 0.001 {
+                    log::info!(
+                        "reload: mirror_cycle_interval {} -> {}",
+                        state.config.mirror_cycle_interval, new_cfg.mirror_cycle_interval
+                    );
+                    state.scene.set_mirror_cycle_interval(new_cfg.mirror_cycle_interval);
                 }
                 if new_cfg.disabled_effects != state.config.disabled_effects {
                     log::info!("reload: disabled_effects -> {:?}", new_cfg.disabled_effects);

@@ -89,13 +89,6 @@ const LINE_MOIRE: &[ParamDef] = &[
     p("ang_b",      0.0, 1.0, 0.5, 0.05),
 ];
 
-const STRANGE_ATTRACTOR: &[ParamDef] = &[
-    p("a",          0.0, 1.0, 0.5, 0.05),
-    p("b",          0.0, 1.0, 0.5, 0.05),
-    p("c",          0.0, 1.0, 0.5, 0.05),
-    p("d",          0.0, 1.0, 0.5, 0.05),
-];
-
 const WIRE_TUNNEL: &[ParamDef] = &[
     p("stripes",    0.0, 1.0, 0.4, 0.05),  // 16..64
     p("twist",      0.0, 1.0, 0.5, 0.05),
@@ -241,7 +234,6 @@ pub fn effect_params(effect: &str) -> &'static [ParamDef] {
         "spectrum_wave"     => SPECTRUM_WAVE,
         // v2
         "line_moire"        => LINE_MOIRE,
-        "strange_attractor" => STRANGE_ATTRACTOR,
         "wire_tunnel"       => WIRE_TUNNEL,
         "voronoi_pulse"     => VORONOI_PULSE,
         "mandelbrot_zoom"   => MANDELBROT_ZOOM,

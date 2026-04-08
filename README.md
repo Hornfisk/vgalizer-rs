@@ -20,7 +20,7 @@ After install, reload your shell (`source ~/.zshrc` or `source ~/.bashrc`) and:
 
 ## Features
 
-- **26 GPU effects** across three sets — v1 classics (hyperspace, kaleido, ring tunnel, warp grid, morph geo, spectrum bars/orbit/terrain/wave), v2 techno/op-art (line_moire, mandelbrot_zoom, strange_attractor, wire_tunnel, voronoi_pulse), and v3 vector/scope/cymatics (vector_terrain, laser_burst, scope_xy, wave_dunes, radial_eq, harmonograph, tv_acid, kaleido_warp, isoline_field, moebius_grid, cymatics, vector_rabbit).
+- **25 GPU effects** across three sets — v1 classics (hyperspace, kaleido, ring tunnel, warp grid, morph geo, spectrum bars/orbit/terrain/wave), v2 techno/op-art (line_moire, mandelbrot_zoom, wire_tunnel, voronoi_pulse), and v3 vector/scope/cymatics (vector_terrain, laser_burst, scope_xy, wave_dunes, radial_eq, harmonograph, tv_acid, kaleido_warp, isoline_field, moebius_grid, cymatics, vector_rabbit).
 - **Post-process chain** — trail, glitch, mirror (H/V/quad/kaleido pool), global rotation + vibration, scanlines, strobe, VGA chromatic-aberration / sync / noise.
 - **Audio reactive** — multi-backend capture (cpal ALSA, parec for PulseAudio monitor sources, pw-cat for native PipeWire) with auto-selection. RMS level + 32-band FFT + beat tracker expose `level / pulse / bpm / bands[i]` to every shader.
 - **Live DJ name overlay** — auto-fits to screen width, chromatic aberration, beat-synced pulse + jitter. Editable live (press `T`).

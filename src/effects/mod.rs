@@ -237,6 +237,66 @@ impl EffectRegistry {
         self.effect_params_cache.insert(name.to_string(), *params);
     }
 
+    /// Force driver-side shader compilation for every registered effect
+    /// by submitting one throwaway draw per pipeline into `target`.
+    ///
+    /// wgpu creates pipelines eagerly in `EffectRegistry::new`, but Mesa's
+    /// i965/iris backend defers the WGSL→SPIR-V→Gen9 native lowering to
+    /// the first real draw call. That shows up as a per-effect stall on
+    /// the first scene-switch after startup — most visible right after
+    /// boot when the kernel page cache hasn't loaded `mesa_shader_cache_db`.
+    ///
+    /// Running a one-triangle draw per pipeline here pays that cost once
+    /// upfront before the winit event loop starts. On UHD 620 Gen9 with
+    /// 25 effects this should add ~1–2 s to startup. We block on
+    /// `device.poll(Wait)` at the end so the caller can assume every
+    /// pipeline is compiled when `prewarm` returns. See T2 in the debug
+    /// plan.
+    pub fn prewarm(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        global_bg: &wgpu::BindGroup,
+    ) {
+        let t0 = std::time::Instant::now();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("effect_prewarm"),
+        });
+        for name in self.effect_names() {
+            let pipeline = &self.pipelines[name];
+            let effect_bg = &self.effect_bind_groups[name];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("prewarm_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, global_bg, &[]);
+            pass.set_bind_group(1, effect_bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit([encoder.finish()]);
+        // Block until the driver has finished compiling + executing every
+        // prewarm draw. Without this the calls are just queued and the
+        // first real frame still pays the compile cost.
+        let _ = device.poll(wgpu::Maintain::Wait);
+        log::info!(
+            "prewarm: compiled {} effect pipelines in {:.1} ms",
+            self.pipelines.len(),
+            t0.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
+
     pub fn render_effect(
         &self,
         encoder: &mut wgpu::CommandEncoder,

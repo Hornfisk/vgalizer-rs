@@ -34,7 +34,9 @@ pub fn run(config: Config, config_path: String) {
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App { config, config_path, state: None };
-    event_loop.run_app(&mut app).expect("Event loop failed");
+    if let Err(e) = event_loop.run_app(&mut app) {
+        log::error!("Event loop exited with error: {:?}", e);
+    }
 }
 
 struct App {

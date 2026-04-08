@@ -1,5 +1,83 @@
 # Changelog
 
+## 2026-04-08 — T1–T6b debug + feature batch (from lazy-roaming-sky plan)
+
+Seven commits landed in one session covering two user-reported bugs
+(choppy effects post-reboot, E/G overlay input lag), three issues found
+during investigation (beat detector never locks, SIGTERM panic, HUD
+stats feature request), and one hardware feature (HDA jack hot-swap).
+Full root-cause analysis and per-effect 600 s headless baselines live
+in `~/lazy-roaming-sky.md` on the dev box.
+
+### Added
+- **HUD system stats** (T5). New `src/system_stats.rs` module spawns a
+  background `vgalizer-sysstats` thread that polls `/proc/stat`,
+  `/proc/self/status`, `/proc/meminfo`, `/sys/class/thermal/thermal_zone{0,2}/temp`,
+  and `/sys/class/drm/card0/gt_{cur,max}_freq_mhz` at 1 Hz. Results
+  publish through atomics to the render loop, so HUD read is lock-free.
+  HUD grows a middle line: `FPS xx.x  CPU xx%  T xx°/xx°  RAM xx/xxxx MB  GPU xxxx/xxxx MHz`.
+  FPS is fed from the existing rolling perf window in `src/app/frame.rs`.
+  All sysfs paths verified on pingo's ThinkPad E480 (UHD 620, Debian 13);
+  thermal_zone0 is acpitz, thermal_zone2 is x86_pkg_temp (best iGPU die
+  proxy), thermal_zone1 is pch_skylake and intentionally ignored.
+- **HDA jack auto-swap** (T6b). New `src/audio/jack_detect.rs` uses the
+  `evdev` crate (new dep, version 0.12) to watch the `HDA Intel PCH Mic`
+  input device for `SW_MICROPHONE_INSERT` events. On plug/unplug the
+  audio capture stream is torn down and restarted so the pipewire
+  auto-pick chain re-routes to whatever source is now active. Dedicated
+  watcher thread blocks on `fetch_events` — zero CPU between plug
+  events. New config field `audio_auto_swap: bool` (default `true`).
+  Setting `audio_device` explicitly disables the watcher so user
+  overrides are always respected. Gracefully no-ops on non-HDA hardware.
+  No root or udev rules needed — the Linux `input` group grants read on
+  `/dev/input/event*`.
+- **Effect pipeline prewarm at startup** (T2). `EffectRegistry::prewarm`
+  issues a throwaway draw for every pipeline into a real color target,
+  submits, and calls `device.poll(Wait)` so Mesa iris can't defer the
+  shader compile until first in-scene draw. Logs
+  `prewarm: compiled N effect pipelines in X.X ms`. Kills the
+  first-visit hitch every time the scene manager rotates to a new
+  effect.
+- **Beat tracker debug instrumentation** (T6a). `beat.rs` now logs a
+  `beat-dbg:` line at `debug` level once every 60 update calls (~1 Hz):
+  rolling flux peak, current `interval`, computed BPM, lock state,
+  `consec_in_window`, `recent_intervals` length, mean, and stddev, plus
+  the missed-beat count. No constants tuned — strictly measurement, so
+  tuning the `LOCK_STDDEV_MAX` threshold after reading a known-BPM run
+  is a follow-up decision. Gated on `RUST_LOG=vgalizer=debug`.
+- **E/G overlay input-latency instrumentation** (T4). Every E
+  (param editor) or G (global settings) action tags an `Instant` in
+  `AppState.pending_overlay_input`; the next rendered frame logs
+  `overlay-input-latency: {E|G} x.xx ms`. Lets pingo measure the
+  key-press → paint interval directly instead of guessing.
+
+### Changed
+- **Overlay text caching** (T4). HUD, params, effects-menu, and
+  global-settings overlays now compare each newly-built text string
+  against a cached `last_text` and skip `buffer.set_text` +
+  `shape_until_scroll` when identical. Root cause of the E/G input lag
+  was `frame.rs` running full glyphon reshapes every frame on unchanged
+  text (~60 reshapes/sec per open overlay). VjeOverlay (V unified
+  overlay) is explicitly out of scope for this fix and intentionally
+  untouched. See T4 notes in `~/lazy-roaming-sky.md`.
+- **`voronoi_pulse.wgsl`** `NUM_POINTS` 42 → 20 and
+  **`vector_terrain.wgsl`** `ROWS` 36 → 22 (T2c). Both shaders were
+  ALU-bound on UHD 620 at 720p (p50 = 37.75 ms and 24.98–37.41 ms
+  respectively in the 600 s baseline), not fill-rate or pipeline
+  cold-compile as initially suspected. Conservative cuts that preserve
+  visual identity; further reductions are the next step if 1080p is
+  still hot.
+
+### Fixed
+- **SIGTERM panic in the winit event loop runner** (T1). `event_loop.run_app(...)`
+  returns `Err` on SIGTERM instead of `Ok(())`, so the previous
+  `.expect()` was crashing the process with a stack trace on any
+  graceful shutdown. Replaced with an `if let Err` logger so `kill -TERM`
+  and `^C` exit cleanly. Affects `src/app/mod.rs::run`.
+
+### Dependencies
+- Added `evdev = "0.12"` for HDA jack watcher (T6b).
+
 ## 2026-04-08 — ravebox dual-display mirror + soak test tooling
 
 ### Added

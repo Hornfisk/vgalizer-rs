@@ -13,6 +13,9 @@ fn default_bpm_lock_max() -> f32 {
 fn default_render_scale() -> f32 {
     1.0
 }
+fn default_audio_auto_swap() -> bool {
+    true
+}
 fn default_upscale_sharpen() -> f32 {
     0.4
 }
@@ -83,6 +86,12 @@ pub struct Config {
     /// and sharpen is 0 (degenerates to a cheap passthrough).
     #[serde(default = "default_upscale_sharpen")]
     pub upscale_sharpen: f32,
+    /// T6b: when true and `audio_device` is unset, the render loop watches
+    /// the HDA mic/line-in jack via `/dev/input/eventN` and auto-swaps the
+    /// capture device on plug/unplug. Setting `audio_device` explicitly
+    /// disables auto-swap so the user override is always respected.
+    #[serde(default = "default_audio_auto_swap")]
+    pub audio_auto_swap: bool,
 }
 
 impl Default for Config {
@@ -123,6 +132,7 @@ impl Default for Config {
             fx_params: HashMap::new(),
             render_scale: default_render_scale(),
             upscale_sharpen: default_upscale_sharpen(),
+            audio_auto_swap: default_audio_auto_swap(),
         }
     }
 }

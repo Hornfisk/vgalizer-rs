@@ -169,6 +169,8 @@ pub struct GlobalSettingsOverlay {
     renderer: TextRenderer,
     viewport: Viewport,
     buffer: Buffer,
+    /// Cached last text; skip glyphon reshape when unchanged. See T4.
+    last_text: String,
 }
 
 impl GlobalSettingsOverlay {
@@ -190,7 +192,7 @@ impl GlobalSettingsOverlay {
         );
         buffer.set_size(&mut font_system, Some(2200.0), Some(900.0));
 
-        Self { font_system, swash_cache, atlas, renderer, viewport, buffer }
+        Self { font_system, swash_cache, atlas, renderer, viewport, buffer, last_text: String::new() }
     }
 
     pub fn update_text(&mut self, st: &GlobalSettingsState, c: &Config) {
@@ -222,6 +224,10 @@ impl GlobalSettingsOverlay {
         s.push_str("\n  Enter save        Esc / G  cancel");
         s.push_str("\n  *    = unsaved change");
 
+        // Skip glyphon reshape when the body is unchanged between frames.
+        if s == self.last_text {
+            return;
+        }
         self.buffer.set_text(
             &mut self.font_system,
             &s,
@@ -229,6 +235,7 @@ impl GlobalSettingsOverlay {
             Shaping::Basic,
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
+        self.last_text = s;
     }
 
     pub fn render(

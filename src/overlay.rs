@@ -14,6 +14,11 @@ pub struct HudOverlay {
     viewport: Viewport,
     buffer: Buffer,
     visible: bool,
+    /// Last string handed to glyphon. `update_text` skips
+    /// `set_text` + `shape_until_scroll` when the newly-built string is
+    /// identical, eliminating per-frame reshape thrashing on unchanged
+    /// HUD content. See T4 in the debug plan.
+    last_text: String,
 }
 
 impl HudOverlay {
@@ -41,6 +46,7 @@ impl HudOverlay {
             viewport,
             buffer,
             visible: true,
+            last_text: String::new(),
         }
     }
 
@@ -65,6 +71,12 @@ impl HudOverlay {
             "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
             effect, bpm, sensitivity, scene_dur, bar
         );
+        // Skip the glyphon reshape if the string is byte-identical to the
+        // last one. Avoids ~60 reshapes/sec of unchanged HUD content when
+        // effect/bpm/sens/level/scene_dur haven't changed between frames.
+        if text == self.last_text {
+            return;
+        }
         self.buffer.set_text(
             &mut self.font_system,
             &text,
@@ -72,6 +84,7 @@ impl HudOverlay {
             Shaping::Basic,
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
+        self.last_text = text;
     }
 
     pub fn render(

@@ -470,6 +470,14 @@ pub(super) fn render_frame(state: &mut AppState) {
 
     state.gpu.queue.submit([encoder.finish()]);
     output.present();
+
+    // T4 verification: log the interval between an E/G overlay keypress
+    // and the frame that renders its visible state. Only fires on frames
+    // where such an input was dispatched, so it's quiet in normal use.
+    if let Some((tag, ts)) = state.pending_overlay_input.take() {
+        let elapsed_ms = ts.elapsed().as_secs_f64() * 1000.0;
+        log::info!("overlay-input-latency: {} {:.2} ms", tag, elapsed_ms);
+    }
 }
 
 /// Fit a (width, height) rect with the given aspect ratio inside

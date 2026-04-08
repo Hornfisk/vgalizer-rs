@@ -108,11 +108,23 @@ impl GpuContext {
     }
 
     pub fn create_linear_texture(&self, label: &str) -> (wgpu::Texture, wgpu::TextureView) {
+        self.create_linear_texture_sized(label, self.size.0, self.size.1)
+    }
+
+    /// Create an Rgba16Float offscreen texture at an explicit size.
+    /// Used to back the internal-resolution effect + post-chain render
+    /// targets when `render_scale < 1.0`.
+    pub fn create_linear_texture_sized(
+        &self,
+        label: &str,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
-                width: self.size.0,
-                height: self.size.1,
+                width: width.max(1),
+                height: height.max(1),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -125,4 +137,17 @@ impl GpuContext {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         (texture, view)
     }
+}
+
+/// Derive the internal render size from a swapchain size and a scale
+/// factor. Clamps scale to [0.5, 1.0] to prevent extreme downscales
+/// that produce mush, and enforces a minimum 16-px dimension so the
+/// GPU doesn't see zero-sized textures on tiny windows. At scale 1.0
+/// this returns `swap` unchanged.
+pub fn internal_size(scale: f32, swap: (u32, u32)) -> (u32, u32) {
+    let s = scale.clamp(0.5, 1.0);
+    (
+        ((swap.0 as f32 * s).round() as u32).max(16),
+        ((swap.1 as f32 * s).round() as u32).max(16),
+    )
 }

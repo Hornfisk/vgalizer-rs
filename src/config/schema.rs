@@ -10,6 +10,12 @@ fn default_bpm_lock_min() -> f32 {
 fn default_bpm_lock_max() -> f32 {
     160.0
 }
+fn default_render_scale() -> f32 {
+    1.0
+}
+fn default_upscale_sharpen() -> f32 {
+    0.4
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -61,6 +67,22 @@ pub struct Config {
     #[serde(default)]
     pub disabled_effects: Option<Vec<String>>,
     pub fx_params: HashMap<String, HashMap<String, serde_json::Value>>,
+    /// Internal render scale. `1.0` = render effects + post chain at the
+    /// swapchain resolution (native, no upscale). Values below 1.0 render
+    /// the effect + post chain at a fraction of the swapchain size and
+    /// upscale via a sharpening blit to the swapchain. Clamped to
+    /// [0.5, 1.0]. On Intel UHD 620 + 1366x768, 0.75 typically gives
+    /// ~15-25% GPU headroom for effects with heavy fragment work
+    /// (hyperspace, mandelbrot_zoom, voronoi_pulse) with minimal
+    /// visible quality loss thanks to the CAS-lite sharpen pass.
+    #[serde(default = "default_render_scale")]
+    pub render_scale: f32,
+    /// CAS-lite sharpening amount in the upscaling blit. `0.0` = pure
+    /// bilinear (no sharpening), `1.0` = max sharpening. Around `0.4`
+    /// feels like FSR1 quality mode. Ignored when render_scale == 1.0
+    /// and sharpen is 0 (degenerates to a cheap passthrough).
+    #[serde(default = "default_upscale_sharpen")]
+    pub upscale_sharpen: f32,
 }
 
 impl Default for Config {
@@ -99,6 +121,8 @@ impl Default for Config {
             mirror_spread: 8,
             disabled_effects: None,
             fx_params: HashMap::new(),
+            render_scale: default_render_scale(),
+            upscale_sharpen: default_upscale_sharpen(),
         }
     }
 }

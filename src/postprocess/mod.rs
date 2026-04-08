@@ -66,20 +66,26 @@ pub struct PostProcessChain {
 impl PostProcessChain {
     /// Build the full post-processing chain. `effect_view` is the texture
     /// the effect stage renders into — it's bound into the trail pass's
-    /// pre-built bind group. On window resize the entire chain is
-    /// reconstructed via `new()` again (with a fresh effect_view), so
+    /// pre-built bind group. `internal_size` is the render resolution of
+    /// the effect + post chain (which may be smaller than the swapchain
+    /// when `render_scale < 1.0`). On window resize or render_scale
+    /// change the entire chain is reconstructed via `new()` again, so
     /// cached bind groups never reference stale resources.
     pub fn new(
         gpu: &GpuContext,
         _global_buf: &wgpu::Buffer,
         effect_view: &wgpu::TextureView,
+        internal_size: (u32, u32),
     ) -> Self {
         let device = &gpu.device;
         let format = wgpu::TextureFormat::Rgba16Float;
 
-        let (tex_a, view_a) = gpu.create_linear_texture("post_tex_a");
-        let (tex_b, view_b) = gpu.create_linear_texture("post_tex_b");
-        let (trail_tex, trail_view) = gpu.create_linear_texture("trail_buf");
+        let (tex_a, view_a) = gpu.create_linear_texture_sized(
+            "post_tex_a", internal_size.0, internal_size.1);
+        let (tex_b, view_b) = gpu.create_linear_texture_sized(
+            "post_tex_b", internal_size.0, internal_size.1);
+        let (trail_tex, trail_view) = gpu.create_linear_texture_sized(
+            "trail_buf", internal_size.0, internal_size.1);
 
         let sampler = pipeline::create_sampler(device);
         let post_buf = pipeline::create_uniform_buffer(device, "post_uniforms", &PostUniforms::zeroed());

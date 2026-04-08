@@ -1,6 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_beat_source() -> String {
+    "flux".to_string()
+}
+fn default_bpm_lock_min() -> f32 {
+    120.0
+}
+fn default_bpm_lock_max() -> f32 {
+    160.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -10,6 +20,21 @@ pub struct Config {
     pub audio_device: Option<String>,
     pub scene_duration: f64,
     pub beat_sensitivity: f32,
+    /// Signal the beat tracker reads. `"flux"` = un-smoothed low-band
+    /// spectral flux (sharp kick detection, default, recommended for
+    /// 4/4 EDM). `"rms"` = legacy full-band smoothed RMS (forgiving for
+    /// non-4/4 material, fallback if a track trips up the flux path).
+    #[serde(default = "default_beat_source")]
+    pub beat_source: String,
+    /// Lower bound of the 4/4 tempo-lock window, in BPM. When the
+    /// tracker has seen enough stable beats inside [min, max] it snaps
+    /// to the nearest integer BPM grid point and freezes there until
+    /// the tempo drifts out of the window.
+    #[serde(default = "default_bpm_lock_min")]
+    pub bpm_lock_min: f32,
+    /// Upper bound of the 4/4 tempo-lock window, in BPM.
+    #[serde(default = "default_bpm_lock_max")]
+    pub bpm_lock_max: f32,
     pub strobe_mode: String,
     pub trail_alpha: u32,
     pub global_vibration: f32,
@@ -47,6 +72,9 @@ impl Default for Config {
             audio_device: None,
             scene_duration: 30.0,
             beat_sensitivity: 1.4,
+            beat_source: default_beat_source(),
+            bpm_lock_min: default_bpm_lock_min(),
+            bpm_lock_max: default_bpm_lock_max(),
             strobe_mode: "beat".to_string(),
             trail_alpha: 40,
             global_vibration: 0.5,

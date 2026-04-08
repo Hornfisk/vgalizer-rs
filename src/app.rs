@@ -202,7 +202,8 @@ impl ApplicationHandler for App {
         let global_settings_overlay = GlobalSettingsOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
         let vje_overlay = VjeOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
 
-        let beat_tracker = BeatTracker::new(config.beat_sensitivity);
+        let mut beat_tracker = BeatTracker::new(config.beat_sensitivity);
+        beat_tracker.set_bpm_lock_range(config.bpm_lock_min, config.bpm_lock_max);
 
         self.state = Some(AppState {
             window,
@@ -773,6 +774,18 @@ impl App {
                     state.sensitivity = new_cfg.beat_sensitivity;
                     state.beat_tracker.set_sensitivity(state.sensitivity);
                 }
+                if (new_cfg.bpm_lock_min - state.config.bpm_lock_min).abs() > 0.01
+                    || (new_cfg.bpm_lock_max - state.config.bpm_lock_max).abs() > 0.01
+                {
+                    log::info!(
+                        "reload: bpm_lock {}..{} -> {}..{}",
+                        state.config.bpm_lock_min, state.config.bpm_lock_max,
+                        new_cfg.bpm_lock_min, new_cfg.bpm_lock_max
+                    );
+                    state
+                        .beat_tracker
+                        .set_bpm_lock_range(new_cfg.bpm_lock_min, new_cfg.bpm_lock_max);
+                }
                 // Push owned-by-SceneManager fields to the scene before the
                 // config swap, since the scene caches them at construction.
                 if (new_cfg.scene_duration - state.config.scene_duration).abs() > 0.001 {
@@ -838,9 +851,17 @@ impl App {
         // Read audio
         let level = state.audio_state.load_level();
         let bands = state.audio_state.load_bands();
+        let kick_flux = state.audio_state.load_kick_flux();
 
-        // Beat detection
-        let beat_state = state.beat_tracker.update(level, t);
+        // Beat detection — flux path is sharp, RMS path is the legacy
+        // fallback toggled via `beat_source` in the XDG config so a
+        // problematic track can be recovered mid-set without a restart.
+        let beat_input = if state.config.beat_source == "rms" {
+            level
+        } else {
+            kick_flux
+        };
+        let beat_state = state.beat_tracker.update(beat_input, t);
 
         // Update pulse (decays between beats)
         if beat_state.beat {

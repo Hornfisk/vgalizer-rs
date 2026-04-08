@@ -37,6 +37,10 @@ env_logger = "0.11"
 log = "0.4"
 rand = "0.8"
 libc = "0.2"
+# Jack-detect auto-swap (T6b): read HDA input-switch events from
+# /dev/input/eventN without touching sysfs or shelling out to amixer.
+# natalia is already in the `input` group on pingo — no root needed.
+evdev = "0.12"
 
 # TUI (vje binary only)
 ratatui = "0.29"

@@ -1,3 +1,4 @@
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,6 +16,7 @@ use blit::{
     make_blit_bind_group, make_blit_pipeline, rebuild_render_targets, BlitUniforms,
 };
 
+use crate::audio::jack_detect::JackEvent;
 use crate::audio::{AtomicAudioState, BeatTracker};
 use crate::audio_picker::{AudioPicker, AudioPickerOverlay};
 use crate::effects_menu::{EffectsMenuOverlay, EffectsMenuState};
@@ -102,6 +104,12 @@ pub(super) struct AppState {
     pub(super) beat_tracker: BeatTracker,
     pub(super) audio_state: Arc<AtomicAudioState>,
     pub(super) _audio_stream: Option<crate::audio::capture::AudioStreamHandle>,
+    /// T6b: receiver for HDA mic/line-in jack plug events. `None` when
+    /// the watcher is disabled (user configured an explicit
+    /// `audio_device`, or `audio_auto_swap=false`, or no HDA jack input
+    /// node exists on this machine). Polled via `try_recv` from the
+    /// redraw loop — see `about_to_wait` below.
+    pub(super) jack_rx: Option<Receiver<JackEvent>>,
     pub(super) config_watcher: Option<crate::config::ConfigWatcher>,
     pub(super) config: Config,
     /// Live system metrics sampled at 1 Hz by a background thread and
@@ -260,6 +268,28 @@ impl ApplicationHandler for App {
             }
         };
 
+        // T6b: HDA mic/line-in jack watcher. Only enabled when the user
+        // has NOT pinned `audio_device` to an explicit value — an
+        // explicit override is always respected and auto-swap is a
+        // no-op in that case. Also silently skipped if the device node
+        // isn't present (non-HDA hardware).
+        let jack_rx = if config.audio_device.is_none() && config.audio_auto_swap {
+            if let Some((dev, plugged)) = crate::audio::jack_detect::find_device() {
+                log::info!(
+                    "jack-detect: HDA mic jack found, initial state: {}",
+                    if plugged { "plugged" } else { "unplugged" }
+                );
+                let (tx, rx) = std::sync::mpsc::channel();
+                crate::audio::jack_detect::spawn_watcher(dev, tx);
+                Some(rx)
+            } else {
+                log::info!("jack-detect: no HDA mic jack input device — auto-swap disabled");
+                None
+            }
+        } else {
+            None
+        };
+
         let config_watcher = crate::config::ConfigWatcher::new(&self.config_path());
         if config_watcher.is_none() {
             log::warn!("ConfigWatcher: not attached — live reload disabled");
@@ -317,6 +347,7 @@ impl ApplicationHandler for App {
             beat_tracker,
             audio_state,
             _audio_stream: stream, // kept alive to prevent drop/stop
+            jack_rx,
             config_watcher,
             config: self.config.clone(),
             system_stats: SystemStats::new(),
@@ -835,7 +866,47 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = &self.state {
+        if let Some(state) = self.state.as_mut() {
+            // T6b: drain any jack-detect events the watcher thread has
+            // queued since the last tick. Multiple rapid plug/unplug
+            // cycles collapse to the most recent state — we only care
+            // about the final edge, not each bounce.
+            if let Some(rx) = &state.jack_rx {
+                let mut latest: Option<JackEvent> = None;
+                while let Ok(ev) = rx.try_recv() {
+                    latest = Some(ev);
+                }
+                if let Some(ev) = latest {
+                    log::info!("jack-detect: applying {:?} — restarting capture", ev);
+                    // Drop the old stream first so the new capture is
+                    // free to claim exclusive access to the HDA PCM if
+                    // it needs to. On pingo the HDA driver auto-mutes
+                    // the path when the jack changes, so after restart
+                    // the auto-pick chain in `start_capture` lands on
+                    // whatever pipewire is now routing — line-in when
+                    // plugged, internal mic when unplugged.
+                    //
+                    // NOTE: this reuses the same `audio_device` config
+                    // (always `None` when the watcher is active) rather
+                    // than hand-picking a PCM name, because pingo
+                    // exposes the analog inputs through a single HDA
+                    // capture device and selection happens inside the
+                    // codec router, not at the ALSA device layer.
+                    state._audio_stream = None;
+                    match crate::audio::capture::start_capture(
+                        state.config.audio_device.as_deref(),
+                        state.audio_state.clone(),
+                    ) {
+                        Ok(s) => {
+                            log::info!("jack-detect: capture restarted");
+                            state._audio_stream = Some(s);
+                        }
+                        Err(e) => {
+                            log::warn!("jack-detect: capture restart failed: {}", e);
+                        }
+                    }
+                }
+            }
             state.window.request_redraw();
         }
     }

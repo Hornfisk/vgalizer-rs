@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# vjtest.sh — monitored, bounded vgalizer soak run
+# vjtest.sh — monitored vgalizer soak run
 #
 # Usage:  vjtest.sh <seconds>              → headless mode, SSH-safe
 #         vjtest.sh <seconds> headless     → same (explicit)
 #         vjtest.sh <seconds> windowed     → --windowed 1280x720, needs a display
 #         vjtest.sh <seconds> cage         → cage kiosk on the physical tty
+#         vjtest.sh inf <mode>             → run forever, until Ctrl-C
 #
 # Captures stdout, stderr, periodic RSS snapshots, and a post-run summary
 # with peak RSS, fps percentiles from the `perf:` log lines, beat-lock
 # count, and any warnings/errors. ^C is safe — the trap still writes the
-# summary.
+# summary before exiting (incl. in `inf` mode).
 #
 # Logs land in ~/vgalizer-logs/<mode>-<YYYYmmdd-HHMMSS>/ and the summary
 # is printed to the terminal on exit.
@@ -27,22 +28,35 @@ if [ ! -x "$BIN" ]; then
     exit 2
 fi
 
+# Accept `inf` / `infinite` / `0` as sentinels for "no timer, run until ^C".
+INFINITE=0
 case "$DURATION" in
-    ''|*[!0-9]*) echo "error: duration must be an integer (seconds)" >&2; exit 2 ;;
+    inf|infinite|0)
+        INFINITE=1
+        DURATION=0
+        ;;
+    ''|*[!0-9]*)
+        echo "error: duration must be an integer (seconds) or 'inf'" >&2
+        exit 2
+        ;;
 esac
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 LOGDIR="$HOME/vgalizer-logs/${MODE}-${STAMP}"
 mkdir -p "$LOGDIR"
 
-# Sample RSS more often on short runs, less often on long ones.
-if [ "$DURATION" -le 120 ]; then
-    RSS_INTERVAL=2
-else
+# Sample RSS more often on short runs, less often on long / infinite ones.
+if [ "$INFINITE" -eq 1 ] || [ "$DURATION" -gt 120 ]; then
     RSS_INTERVAL=10
+else
+    RSS_INTERVAL=2
 fi
 
-echo "vjtest: mode=$MODE duration=${DURATION}s rss_interval=${RSS_INTERVAL}s"
+if [ "$INFINITE" -eq 1 ]; then
+    echo "vjtest: mode=$MODE duration=inf (Ctrl-C to stop) rss_interval=${RSS_INTERVAL}s"
+else
+    echo "vjtest: mode=$MODE duration=${DURATION}s rss_interval=${RSS_INTERVAL}s"
+fi
 echo "vjtest: logs -> $LOGDIR"
 echo "vjtest: binary $(stat -c %y "$BIN")"
 echo
@@ -173,11 +187,21 @@ summarize() {
     } | tee "$LOGDIR/summary.txt"
 }
 
-# Ensure summary runs whether we ^C, SIGTERM, or the sleep finishes.
+# Ensure summary runs whether we ^C, SIGTERM, or the wait finishes.
 EXIT_CODE=0
-trap 'EXIT_CODE=130; summarize; exit $EXIT_CODE' INT TERM
+trap 'EXIT_CODE=130; summarize; kill -TERM "$VJPID" 2>/dev/null; exit $EXIT_CODE' INT TERM
 
-# --- Wait for the requested duration, then shut vgalizer down cleanly --------
+if [ "$INFINITE" -eq 1 ]; then
+    # Infinite mode: just wait on vgalizer itself. Ctrl-C fires the trap
+    # above which summarises and TERMs the child on its way out. If
+    # vgalizer dies on its own, we also summarise and exit with its code.
+    wait "$VJPID" 2>/dev/null
+    EXIT_CODE=$?
+    summarize
+    exit "$EXIT_CODE"
+fi
+
+# --- Bounded mode: wait for the requested duration, then shut down cleanly --
 sleep "$DURATION" &
 SLEEP_PID=$!
 wait "$SLEEP_PID" 2>/dev/null

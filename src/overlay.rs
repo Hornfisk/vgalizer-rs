@@ -62,7 +62,7 @@ impl HudOverlay {
     ) {
         let bar = level_bar(level);
         let text = format!(
-            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  H hide  Q quit",
+            "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
             effect, bpm, sensitivity, scene_dur, bar
         );
         self.buffer.set_text(

@@ -171,6 +171,14 @@ impl ApplicationHandler for App {
         let (effect_tex, effect_view) = gpu.create_linear_texture_sized(
             "effect_output", internal_size.0, internal_size.1);
 
+        // T2: force driver-side shader compilation for every effect
+        // pipeline before the event loop starts, so the first scene
+        // switch doesn't stall on Mesa lowering WGSL→Gen9 native. This
+        // intentionally delays startup by ~1–2 s on UHD 620 and drops
+        // the per-first-visit hitch to zero. See src/effects/mod.rs
+        // `EffectRegistry::prewarm` for the rationale.
+        effects.prewarm(&gpu.device, &gpu.queue, &effect_view, &global_bg);
+
         // Post-processing — pass `effect_view` so the chain can cache the
         // trail-pass bind group once at construction instead of rebuilding
         // it every frame.

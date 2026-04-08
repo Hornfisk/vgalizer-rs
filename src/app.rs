@@ -52,6 +52,12 @@ struct AppState {
     // Blit pipeline: copies post result (Rgba16Float) to swapchain (sRGB)
     blit_pipeline: wgpu::RenderPipeline,
     blit_bgl: wgpu::BindGroupLayout,
+    /// Sampler used by the blit pass to sample the post chain's final
+    /// texture. Allocated once; never changes.
+    blit_sampler: wgpu::Sampler,
+    /// Pre-built bind group for the blit pass. Rebuilt only on window
+    /// resize, when `post_chain.final_view()` changes identity.
+    blit_bg: wgpu::BindGroup,
 
     name_overlay: NameOverlay,
     hud: HudOverlay,
@@ -121,8 +127,14 @@ impl ApplicationHandler for App {
         // Effect render target
         let (effect_tex, effect_view) = gpu.create_linear_texture("effect_output");
 
-        // Post-processing
-        let post_chain = PostProcessChain::new(&gpu, &effects.global_uniform_buffer);
+        // Post-processing — pass `effect_view` so the chain can cache the
+        // trail-pass bind group once at construction instead of rebuilding
+        // it every frame.
+        let post_chain = PostProcessChain::new(
+            &gpu,
+            &effects.global_uniform_buffer,
+            &effect_view,
+        );
 
         // Blit pipeline: copies Rgba16Float → swapchain sRGB
         let blit_bgl = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -133,6 +145,16 @@ impl ApplicationHandler for App {
             ],
         });
         let blit_pipeline = make_blit_pipeline(&gpu.device, &blit_bgl, gpu.surface_format());
+        // Cache the sampler + bind group once. Rebuilt only on window
+        // resize (see resize path below), when the post chain's final
+        // view is recreated.
+        let blit_sampler = crate::gpu::pipeline::create_sampler(&gpu.device);
+        let blit_bg = make_blit_bind_group(
+            &gpu.device,
+            &blit_bgl,
+            post_chain.final_view(),
+            &blit_sampler,
+        );
 
         let screen_size = gpu.size;
 
@@ -192,6 +214,8 @@ impl ApplicationHandler for App {
             effect_view,
             blit_pipeline,
             blit_bgl,
+            blit_sampler,
+            blit_bg,
             name_overlay,
             hud,
             audio_picker: None,
@@ -698,7 +722,21 @@ impl ApplicationHandler for App {
                 let (effect_tex, effect_view) = s.gpu.create_linear_texture("effect_output");
                 s.effect_tex  = effect_tex;
                 s.effect_view = effect_view;
-                s.post_chain  = PostProcessChain::new(&s.gpu, &s.effects.global_uniform_buffer);
+                s.post_chain  = PostProcessChain::new(
+                    &s.gpu,
+                    &s.effects.global_uniform_buffer,
+                    &s.effect_view,
+                );
+                // Rebuild the blit bind group: post_chain.final_view() is
+                // a fresh TextureView after the chain rebuild, and the
+                // old blit_bg still references the view owned by the
+                // dropped chain.
+                s.blit_bg = make_blit_bind_group(
+                    &s.gpu.device,
+                    &s.blit_bgl,
+                    s.post_chain.final_view(),
+                    &s.blit_sampler,
+                );
             }
             WindowEvent::RedrawRequested => {
                 self.render_frame();
@@ -780,10 +818,13 @@ impl App {
         if state.frame_count >= 300 {
             let elapsed = state.perf_window_start.elapsed().as_secs_f32();
             let fps = state.frame_count as f32 / elapsed;
-            let mut sorted = state.frame_times_ms.clone();
-            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let p50 = sorted[sorted.len() / 2];
-            let p99 = sorted[(sorted.len() * 99) / 100];
+            // Sort in place; clear afterwards. Avoids a Vec::clone() per
+            // perf window. NaN-safe: if a dt is ever NaN (clock hiccup),
+            // treat it as equal so we don't panic 4 hours into a set.
+            state.frame_times_ms
+                .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let p50 = state.frame_times_ms[state.frame_times_ms.len() / 2];
+            let p99 = state.frame_times_ms[(state.frame_times_ms.len() * 99) / 100];
             log::info!(
                 "perf: {:.1} fps  p50={:.2}ms  p99={:.2}ms",
                 fps, p50, p99
@@ -952,12 +993,8 @@ impl App {
         );
 
         // --- Post-processing chain ---
-        let final_view = state.post_chain.process(
-            &mut encoder,
-            &state.gpu.device,
-            &state.effect_view,
-            &post,
-        );
+        // Bind groups are pre-built; this is allocation-free.
+        state.post_chain.process(&mut encoder);
 
         // --- Compute viz + panel rects ---
         //
@@ -989,22 +1026,9 @@ impl App {
         };
 
         // --- Blit to swapchain ---
+        // blit_bg is pre-built and references post_chain.final_view(),
+        // which is stable until the next window resize.
         {
-            let sampler = crate::gpu::pipeline::create_sampler(&state.gpu.device);
-            let blit_bg = state.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("blit_bg"),
-                layout: &state.blit_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(final_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-            });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("blit_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1020,7 +1044,7 @@ impl App {
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&state.blit_pipeline);
-            pass.set_bind_group(0, &blit_bg, &[]);
+            pass.set_bind_group(0, &state.blit_bg, &[]);
             // Scissor the viz to the preview sub-rect when the vje
             // overlay is open. When it isn't, the viewport is the whole
             // surface so the viz fills the window as before.
@@ -1234,6 +1258,30 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     return textureSample(input_tex, tex_samp, uv);
 }
 "#;
+
+/// Build the blit pass bind group. Called once at startup and again on
+/// each window resize (when `post_chain.final_view()` identity changes).
+fn make_blit_bind_group(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+    src_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("blit_bg"),
+        layout: bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(src_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
+}
 
 fn make_blit_pipeline(
     device: &wgpu::Device,

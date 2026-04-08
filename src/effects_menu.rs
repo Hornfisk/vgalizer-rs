@@ -89,6 +89,8 @@ pub struct EffectsMenuOverlay {
     renderer: TextRenderer,
     viewport: Viewport,
     buffer: Buffer,
+    /// Cached last text; skip glyphon reshape when unchanged. See T4.
+    last_text: String,
 }
 
 impl EffectsMenuOverlay {
@@ -110,7 +112,7 @@ impl EffectsMenuOverlay {
         );
         buffer.set_size(&mut font_system, Some(2400.0), Some(1400.0));
 
-        Self { font_system, swash_cache, atlas, renderer, viewport, buffer }
+        Self { font_system, swash_cache, atlas, renderer, viewport, buffer, last_text: String::new() }
     }
 
     pub fn update_text(&mut self, st: &EffectsMenuState, scene_dur: f64) {
@@ -144,6 +146,10 @@ impl EffectsMenuOverlay {
         s.push_str("\n  Shift+↑/↓  auto-time  ±5s");
         s.push_str("\n  Enter save       Esc / M  cancel");
 
+        // Skip glyphon reshape when the body is unchanged between frames.
+        if s == self.last_text {
+            return;
+        }
         self.buffer.set_text(
             &mut self.font_system,
             &s,
@@ -151,6 +157,7 @@ impl EffectsMenuOverlay {
             Shaping::Basic,
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
+        self.last_text = s;
     }
 
     pub fn render(

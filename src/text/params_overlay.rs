@@ -113,6 +113,9 @@ pub struct ParamsOverlay {
     viewport: Viewport,
     buffer: Buffer,
     font_size_px: f32,
+    /// Cached last text; `update_text` skips glyphon reshape when the
+    /// newly-built body is identical. See T4 in the debug plan.
+    last_text: String,
 }
 
 impl ParamsOverlay {
@@ -142,6 +145,7 @@ impl ParamsOverlay {
             viewport,
             buffer,
             font_size_px,
+            last_text: String::new(),
         }
     }
 
@@ -185,6 +189,13 @@ impl ParamsOverlay {
             s.push_str("\n  *    = unsaved change");
         }
 
+        // Skip the glyphon reshape if nothing changed since last frame.
+        // The E overlay is re-drawn every frame while open; caching the
+        // string eliminates the vast majority of set_text + shape calls
+        // since the text only changes on keystroke.
+        if s == self.last_text {
+            return;
+        }
         self.buffer.set_text(
             &mut self.font_system,
             &s,
@@ -192,6 +203,7 @@ impl ParamsOverlay {
             Shaping::Basic,
         );
         self.buffer.shape_until_scroll(&mut self.font_system, false);
+        self.last_text = s;
     }
 
     pub fn render(

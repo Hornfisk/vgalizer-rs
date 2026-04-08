@@ -118,6 +118,13 @@ pub(super) struct AppState {
     pub(super) frame_count: u32,
     pub(super) perf_window_start: Instant,
     pub(super) frame_times_ms: Vec<f32>,
+
+    /// Set by `window_event` when an E (params) or G (global) overlay
+    /// input is dispatched; consumed (logged + cleared) at the end of
+    /// the next `render_frame`. Measures the handler→paint interval so
+    /// the pingo test ladder can confirm the T4 fix actually dropped
+    /// overlay input latency below ~1 frame time.
+    pub(super) pending_overlay_input: Option<(&'static str, Instant)>,
 }
 
 impl ApplicationHandler for App {
@@ -311,6 +318,7 @@ impl ApplicationHandler for App {
             frame_count: 0,
             perf_window_start: Instant::now(),
             frame_times_ms: Vec::with_capacity(300),
+            pending_overlay_input: None,
         });
     }
 
@@ -336,6 +344,29 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if let Some(action) = state.input.handle(&key_event) {
+                    // T4 instrumentation: tag E (params) / G (global)
+                    // overlay inputs with a timestamp so `frame::render_frame`
+                    // can log the handler→paint interval on the next frame.
+                    let overlay_tag: Option<&'static str> = match &action {
+                        Action::ToggleParamEditor
+                        | Action::ParamEditUp
+                        | Action::ParamEditDown
+                        | Action::ParamEditLeft(_)
+                        | Action::ParamEditRight(_)
+                        | Action::ParamEditConfirm
+                        | Action::ParamEditCancel => Some("E"),
+                        Action::ToggleGlobalSettings
+                        | Action::GlobalSettingsUp
+                        | Action::GlobalSettingsDown
+                        | Action::GlobalSettingsLeft(_)
+                        | Action::GlobalSettingsRight(_)
+                        | Action::GlobalSettingsConfirm
+                        | Action::GlobalSettingsCancel => Some("G"),
+                        _ => None,
+                    };
+                    if let Some(tag) = overlay_tag {
+                        state.pending_overlay_input = Some((tag, Instant::now()));
+                    }
                     match action {
                         Action::Quit => event_loop.exit(),
                         Action::NextEffect => state.scene.advance(),

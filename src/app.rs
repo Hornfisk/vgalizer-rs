@@ -49,15 +49,28 @@ struct AppState {
     post_chain: PostProcessChain,
     effect_tex: wgpu::Texture,
     effect_view: wgpu::TextureView,
+    /// Effect + post render resolution. Equal to `gpu.size` when
+    /// `config.render_scale == 1.0`, otherwise a fraction of it.
+    /// The swapchain always stays at window size; only the effect
+    /// and post-chain textures are scaled. The blit pass upscales
+    /// internal → swapchain with a CAS-lite sharpen.
+    internal_size: (u32, u32),
     // Blit pipeline: copies post result (Rgba16Float) to swapchain (sRGB)
+    // with optional CAS-lite contrast-adaptive sharpen.
     blit_pipeline: wgpu::RenderPipeline,
     blit_bgl: wgpu::BindGroupLayout,
     /// Sampler used by the blit pass to sample the post chain's final
-    /// texture. Allocated once; never changes.
+    /// texture. Linear filtering so the upscale is smooth before
+    /// sharpening. Allocated once; never changes.
     blit_sampler: wgpu::Sampler,
-    /// Pre-built bind group for the blit pass. Rebuilt only on window
-    /// resize, when `post_chain.final_view()` changes identity.
+    /// Pre-built bind group for the blit pass. Rebuilt only when
+    /// `post_chain.final_view()` identity changes (window resize or
+    /// render_scale hot-reload).
     blit_bg: wgpu::BindGroup,
+    /// Uniform buffer feeding `BlitUniforms` to the CAS-lite fragment
+    /// shader (inv_src_size + sharpen amount). Rewritten on init,
+    /// resize, and render_scale / upscale_sharpen hot-reload.
+    blit_uniform_buf: wgpu::Buffer,
 
     name_overlay: NameOverlay,
     hud: HudOverlay,
@@ -124,8 +137,22 @@ impl ApplicationHandler for App {
         );
         let global_bg = effects.global_bind_group(&gpu.device);
 
+        // Effect + post chain render at internal_size, which may be
+        // smaller than the swapchain when render_scale < 1.0. The blit
+        // pass handles the upscale.
+        let internal_size = crate::gpu::internal_size(config.render_scale, gpu.size);
+        if internal_size != gpu.size {
+            log::info!(
+                "render_scale={:.2}: effect+post at {}x{}, swapchain at {}x{}",
+                config.render_scale,
+                internal_size.0, internal_size.1,
+                gpu.size.0, gpu.size.1
+            );
+        }
+
         // Effect render target
-        let (effect_tex, effect_view) = gpu.create_linear_texture("effect_output");
+        let (effect_tex, effect_view) = gpu.create_linear_texture_sized(
+            "effect_output", internal_size.0, internal_size.1);
 
         // Post-processing — pass `effect_view` so the chain can cache the
         // trail-pass bind group once at construction instead of rebuilding
@@ -134,26 +161,49 @@ impl ApplicationHandler for App {
             &gpu,
             &effects.global_uniform_buffer,
             &effect_view,
+            internal_size,
         );
 
-        // Blit pipeline: copies Rgba16Float → swapchain sRGB
+        // Blit pipeline: copies Rgba16Float → swapchain sRGB with CAS-lite
+        // sharpen. Binds a uniform buffer carrying (inv_src_size, sharpen).
         let blit_bgl = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("blit_bgl"),
             entries: &[
                 blit_tex_entry(0),
                 blit_sampler_entry(1),
+                blit_uniform_entry(2),
             ],
         });
         let blit_pipeline = make_blit_pipeline(&gpu.device, &blit_bgl, gpu.surface_format());
-        // Cache the sampler + bind group once. Rebuilt only on window
-        // resize (see resize path below), when the post chain's final
-        // view is recreated.
-        let blit_sampler = crate::gpu::pipeline::create_sampler(&gpu.device);
+        // Linear sampler so the upsample is bilinear underneath the CAS
+        // sharpening. Allocated once.
+        let blit_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("blit_sampler_linear"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+        let blit_uniform_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("blit_uniform"),
+            size: std::mem::size_of::<BlitUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue.write_buffer(
+            &blit_uniform_buf,
+            0,
+            bytemuck::bytes_of(&BlitUniforms::from_sizes(internal_size, config.upscale_sharpen)),
+        );
         let blit_bg = make_blit_bind_group(
             &gpu.device,
             &blit_bgl,
             post_chain.final_view(),
             &blit_sampler,
+            &blit_uniform_buf,
         );
 
         let screen_size = gpu.size;
@@ -213,10 +263,12 @@ impl ApplicationHandler for App {
             post_chain,
             effect_tex,
             effect_view,
+            internal_size,
             blit_pipeline,
             blit_bgl,
             blit_sampler,
             blit_bg,
+            blit_uniform_buf,
             name_overlay,
             hud,
             audio_picker: None,
@@ -719,25 +771,7 @@ impl ApplicationHandler for App {
                 let new_size = (size.width.max(1), size.height.max(1));
                 let s = &mut self.state.as_mut().unwrap();
                 s.gpu.resize(new_size);
-                // Recreate render textures at the new resolution
-                let (effect_tex, effect_view) = s.gpu.create_linear_texture("effect_output");
-                s.effect_tex  = effect_tex;
-                s.effect_view = effect_view;
-                s.post_chain  = PostProcessChain::new(
-                    &s.gpu,
-                    &s.effects.global_uniform_buffer,
-                    &s.effect_view,
-                );
-                // Rebuild the blit bind group: post_chain.final_view() is
-                // a fresh TextureView after the chain rebuild, and the
-                // old blit_bg still references the view owned by the
-                // dropped chain.
-                s.blit_bg = make_blit_bind_group(
-                    &s.gpu.device,
-                    &s.blit_bgl,
-                    s.post_chain.final_view(),
-                    &s.blit_sampler,
-                );
+                rebuild_render_targets(s);
             }
             WindowEvent::RedrawRequested => {
                 self.render_frame();
@@ -808,7 +842,29 @@ impl App {
                     state.scene.set_disabled_filter(new_cfg.disabled_effects.as_deref());
                 }
                 let fx_changed = new_cfg.fx_params != state.config.fx_params;
+                let render_scale_changed =
+                    (new_cfg.render_scale - state.config.render_scale).abs() > 0.001;
+                let sharpen_changed =
+                    (new_cfg.upscale_sharpen - state.config.upscale_sharpen).abs() > 0.001;
                 state.config = new_cfg;
+                // Handle render_scale / upscale_sharpen after the config
+                // swap so the rebuild helpers read the new values.
+                if render_scale_changed {
+                    log::info!("reload: render_scale -> {:.2}", state.config.render_scale);
+                    rebuild_render_targets(state);
+                } else if sharpen_changed {
+                    // Sharpen-only change: no texture rebuild needed, just
+                    // rewrite the blit uniform in place.
+                    log::info!("reload: upscale_sharpen -> {:.2}", state.config.upscale_sharpen);
+                    state.gpu.queue.write_buffer(
+                        &state.blit_uniform_buf,
+                        0,
+                        bytemuck::bytes_of(&BlitUniforms::from_sizes(
+                            state.internal_size,
+                            state.config.upscale_sharpen,
+                        )),
+                    );
+                }
                 // Re-upload params for the active effect if its named knobs
                 // changed in the config file (e.g. another machine pushed).
                 if fx_changed && state.params_edit.is_none() {
@@ -931,7 +987,12 @@ impl App {
             dt,
             beat_time,
             fx_speed: state.config.fx_speed_mult,
-            resolution: [state.gpu.size.0 as f32, state.gpu.size.1 as f32],
+            // Shaders use `resolution` for pixel-space math. When
+            // render_scale < 1.0 the effect + post chain are rendered
+            // at `internal_size`, so we report *that* size, not the
+            // swapchain size. This keeps effect visuals identical
+            // regardless of scale (the CAS blit handles upscaling).
+            resolution: [state.internal_size.0 as f32, state.internal_size.1 as f32],
             _pad1: [0.0; 2],
             level,
             pulse: state.pulse,
@@ -1253,11 +1314,57 @@ fn handle_text_input_key(state: &mut AppState, ev: &winit::event::KeyEvent) {
     }
 }
 
-// --- Blit pipeline helpers ---
+// --- Blit pipeline helpers + CAS-lite upscale shader ---
 
+/// Blit uniform buffer layout. Must match `struct BlitUniforms` in
+/// `BLIT_FRAG_SRC`. Fields are 16-byte aligned for std140 uniform rules.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BlitUniforms {
+    /// (1/src_width, 1/src_height). Used by the CAS-lite shader to
+    /// sample cardinal neighbors one *source* pixel away, which is
+    /// correct for sharpening a bilinearly upsampled image.
+    inv_src_size: [f32; 2],
+    /// Sharpen amount in [0, 1]. `0.0` = pure linear blit (no extra
+    /// texture taps — the shader early-exits), higher = stronger CAS
+    /// sharpening.
+    sharpen: f32,
+    _pad: f32,
+}
+
+impl BlitUniforms {
+    fn from_sizes(internal: (u32, u32), sharpen: f32) -> Self {
+        Self {
+            inv_src_size: [
+                1.0 / internal.0.max(1) as f32,
+                1.0 / internal.1.max(1) as f32,
+            ],
+            sharpen: sharpen.clamp(0.0, 1.0),
+            _pad: 0.0,
+        }
+    }
+}
+
+/// CAS-lite upscale blit fragment shader. Reads an Rgba16Float internal
+/// render texture and writes the sRGB swapchain with an optional
+/// contrast-adaptive sharpen filter. When `sharpen == 0` it degenerates
+/// to a single linear-sampled tap (cheapest possible upscale); when
+/// `sharpen > 0` it adds a 5-tap CAS-style sharpen that recovers
+/// crispness lost to the bilinear upsample.
+///
+/// Derived from AMD's public CAS reference; simplified: single-pass
+/// (no separate EASU), luma-adaptive weight, sample taps at one source
+/// pixel away so the sharpen works regardless of the dest/source ratio.
 const BLIT_FRAG_SRC: &str = r#"
+struct BlitUniforms {
+    inv_src_size: vec2<f32>,
+    sharpen: f32,
+    _pad: f32,
+};
+
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var tex_samp: sampler;
+@group(0) @binding(2) var<uniform> u: BlitUniforms;
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -1274,19 +1381,51 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return out;
 }
 
+fn luma(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.299, 0.587, 0.114));
+}
+
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    return textureSample(input_tex, tex_samp, uv);
+    let c = textureSample(input_tex, tex_samp, uv);
+    if (u.sharpen <= 0.001) {
+        return c;
+    }
+    let o = u.inv_src_size;
+    let n = textureSample(input_tex, tex_samp, uv + vec2<f32>(0.0, -o.y)).rgb;
+    let s = textureSample(input_tex, tex_samp, uv + vec2<f32>(0.0,  o.y)).rgb;
+    let e = textureSample(input_tex, tex_samp, uv + vec2<f32>( o.x, 0.0)).rgb;
+    let w = textureSample(input_tex, tex_samp, uv + vec2<f32>(-o.x, 0.0)).rgb;
+
+    let mn = min(min(min(min(c.rgb, n), s), e), w);
+    let mx = max(max(max(max(c.rgb, n), s), e), w);
+    let mn_l = luma(mn);
+    let mx_l = luma(mx);
+
+    // CAS contrast adaptivity: less sharpening in already-saturated
+    // regions (near 0 or 1 luma) so we don't amplify noise.
+    let amp_in = min(mn_l, 1.0 - mx_l) / max(mx_l, 1e-4);
+    let amp = sqrt(clamp(amp_in, 0.0, 1.0));
+
+    // Map user sharpen 0..1 to CAS peak -0.125..-0.2 (AMD's useful range).
+    let peak = -0.125 - 0.075 * u.sharpen;
+    let weight = amp * peak;
+
+    let sum = (n + s + e + w) * weight;
+    let denom = 1.0 + 4.0 * weight;
+    return vec4<f32>((c.rgb + sum) / denom, c.a);
 }
 "#;
 
-/// Build the blit pass bind group. Called once at startup and again on
-/// each window resize (when `post_chain.final_view()` identity changes).
+/// Build the blit pass bind group. Called once at startup and again
+/// whenever `post_chain.final_view()` identity changes (window resize or
+/// render_scale hot-reload).
 fn make_blit_bind_group(
     device: &wgpu::Device,
     bgl: &wgpu::BindGroupLayout,
     src_view: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
+    uniform_buf: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("blit_bg"),
@@ -1300,8 +1439,51 @@ fn make_blit_bind_group(
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform_buf.as_entire_binding(),
+            },
         ],
     })
+}
+
+/// Rebuild the effect + post-chain render targets and the blit bind
+/// group using the current `config.render_scale` against the current
+/// swapchain size. Called on window resize and on `render_scale`
+/// hot-reload. Also rewrites the blit uniform buffer so inv_src_size
+/// matches the new internal render resolution.
+fn rebuild_render_targets(s: &mut AppState) {
+    let new_internal = crate::gpu::internal_size(s.config.render_scale, s.gpu.size);
+    log::info!(
+        "render targets: swap {}x{} internal {}x{} (scale {:.2})",
+        s.gpu.size.0, s.gpu.size.1,
+        new_internal.0, new_internal.1,
+        s.config.render_scale
+    );
+    s.internal_size = new_internal;
+
+    let (effect_tex, effect_view) = s.gpu.create_linear_texture_sized(
+        "effect_output", new_internal.0, new_internal.1);
+    s.effect_tex = effect_tex;
+    s.effect_view = effect_view;
+    s.post_chain = PostProcessChain::new(
+        &s.gpu,
+        &s.effects.global_uniform_buffer,
+        &s.effect_view,
+        new_internal,
+    );
+    s.gpu.queue.write_buffer(
+        &s.blit_uniform_buf,
+        0,
+        bytemuck::bytes_of(&BlitUniforms::from_sizes(new_internal, s.config.upscale_sharpen)),
+    );
+    s.blit_bg = make_blit_bind_group(
+        &s.gpu.device,
+        &s.blit_bgl,
+        s.post_chain.final_view(),
+        &s.blit_sampler,
+        &s.blit_uniform_buf,
+    );
 }
 
 fn make_blit_pipeline(
@@ -1363,6 +1545,19 @@ fn blit_sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
+    }
+}
+
+fn blit_uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
         count: None,
     }
 }

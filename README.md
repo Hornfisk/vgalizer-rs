@@ -154,6 +154,26 @@ FFT: rustfft 6
 Text: glyphon 0.8
 TUI (vje): ratatui 0.29 · crossterm 0.28
 
+## Soak testing
+
+`scripts/vjtest.sh` is a bounded, monitored soak-run harness. Three modes:
+
+- `vjtest.sh <secs> headless` — `WLR_BACKENDS=headless cage -- vgalizer`. SSH-safe, no physical display. Exercises the full render + post + blit pipeline with no scanout. Good for catching leaks, panics, and FFT/beat detector regressions before a gig.
+- `vjtest.sh <secs> windowed` — native `vgalizer --windowed 1280x720`. Requires an existing Wayland/X11 session.
+- `vjtest.sh <secs> cage` — real cage kiosk on the physical tty. Production path.
+
+Captures stdout/stderr, periodic RSS samples, and on exit prints a summary with peak/delta RSS, fps percentiles from the `perf:` log lines, beat-lock counts, scene-switch count, and any warnings/errors. `^C` is safe — the trap runs the summarizer on any exit path. Suggested shell aliases:
+
+```bash
+alias vjtestshort='~/repos/vgalizer-rs/scripts/vjtest.sh 60 headless'
+alias vjtestfull='~/repos/vgalizer-rs/scripts/vjtest.sh 2700 headless'
+alias vjtestcage='~/repos/vgalizer-rs/scripts/vjtest.sh 2700 cage'
+```
+
+## Running on a dedicated kiosk box (ravebox / pingo)
+
+See [`ravebox-runbook.md`](ravebox-runbook.md) for the full build of a sealed-purpose ThinkPad E480 running Debian 13 + PipeWire + cage + vgalizer as the sole workload. Covers distro choice rationale, PipeWire lockdown config, audio line-in → mic fallback, reliability locks for live use, boot flow, and the dual-display mirror workaround (stock cage 0.2.0 has no mirror mode — a 1-line patch to `output.c`'s `output_layout_add_auto` pins every output to `(0,0)` which gives true mirroring via wlroots' scene graph).
+
 ## License
 
 MIT

@@ -4,7 +4,12 @@
 // each seed (NOT a jitter trigger).
 
 const PI: f32 = 3.14159265359;
-const NUM_POINTS: u32 = 42u;
+// NUM_POINTS is the dominant frame-time driver: each fragment runs
+// seed_pos() — which has ~15 transcendentals and 3 distances — once
+// per point. 42 was ALU-bound on UHD 620 (p50 ≈ 37.75 ms at 720p).
+// 20 halves the cost into frame-rate budget with sparser/larger cells.
+// See T2c in the debug plan.
+const NUM_POINTS: u32 = 20u;
 
 fn hash1(i: f32) -> f32 {
     return fract(sin(i * 45.164) * 43758.5453);

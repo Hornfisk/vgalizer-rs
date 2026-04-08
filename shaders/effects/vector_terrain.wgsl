@@ -3,7 +3,12 @@
 // Reds at low altitudes, greens at peaks. Pure thin-line on black.
 
 const PI: f32 = 3.14159265359;
-const ROWS: i32 = 36;
+// ROWS is the outer loop multiplier: each row runs sample_band_row()
+// (8-band sin+exp inner loop) plus extra per-row sin/cos travelling
+// ridges. 36 was ALU-bound on UHD 620 (p50 drifting 24.98 → 37.41 ms
+// at 720p across visits). 22 keeps the waterfall depth feel while
+// pulling the effect into the 16.5 ms/frame budget. See T2c.
+const ROWS: i32 = 22;
 
 fn sample_band_row(row: i32, col_f: f32) -> f32 {
     // Synthesise a per-row spectrum from the live bands plus a row-dependent

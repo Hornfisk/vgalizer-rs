@@ -22,7 +22,8 @@ After install, reload your shell (`source ~/.zshrc` or `source ~/.bashrc`) and:
 
 - **25 GPU effects** across three sets — v1 classics (hyperspace, kaleido, ring tunnel, warp grid, morph geo, spectrum bars/orbit/terrain/wave), v2 techno/op-art (line_moire, mandelbrot_zoom, wire_tunnel, voronoi_pulse), and v3 vector/scope/cymatics (vector_terrain, laser_burst, scope_xy, wave_dunes, radial_eq, harmonograph, tv_acid, kaleido_warp, isoline_field, moebius_grid, cymatics, vector_rabbit).
 - **Post-process chain** — trail, glitch, mirror (H/V/quad/kaleido pool), global rotation + vibration, scanlines, strobe, VGA chromatic-aberration / sync / noise.
-- **Audio reactive** — multi-backend capture (cpal ALSA, parec for PulseAudio monitor sources, pw-cat for native PipeWire) with auto-selection. RMS level + 32-band FFT + beat tracker expose `level / pulse / bpm / bands[i]` to every shader.
+- **Audio reactive** — multi-backend capture (cpal ALSA, parec for PulseAudio monitor sources, pw-cat for native PipeWire) with auto-selection. RMS level + 32-band FFT + beat tracker expose `level / pulse / bpm / bands[i]` to every shader. On HDA laptops the mic/line-in combo jack is watched via `evdev` and capture auto-swaps on plug/unplug (`audio_auto_swap`, default on; overridden by an explicit `audio_device`).
+- **HUD system stats** — FPS / CPU% / CPU + package temps / RSS + available RAM / iGPU current+max MHz, sampled at 1 Hz by a background thread and published through atomics. Toggle the HUD with `H`.
 - **Live DJ name overlay** — auto-fits to screen width, chromatic aberration, beat-synced pulse + jitter. Editable live (press `T`).
 - **vje — standalone TUI param editor** — separate binary (`~/.cargo/bin/vje`). Browse all 26 effects and their params, nudge values with `←→` (Shift = ×10), reset to defaults, toggle effects on/off, edit globals (scene duration, beat sensitivity, strobe mode, fx speed, mirror pool…). Commits land in `~/.config/vgalizer/config.json` atomically; the running visualizer picks them up via `notify` in ~100ms — no restart.
 - **Hot-reload config with layered merge** — seed `config.json` ships the baseline shape, user state lives in `~/.config/vgalizer/config.json`. Both files are merged on startup AND on every external edit, so `vje`, in-app overlays, or manual edits all feed the same live-reload path.
@@ -90,6 +91,7 @@ Run `vje` in any terminal while `vgalizer` is running. Two processes, one config
   "dj_name": "DJ NAME",
   "fullscreen": true,
   "audio_device": null,
+  "audio_auto_swap": true,
   "scene_duration": 30.0,
   "beat_sensitivity": 1.4,
   "strobe_mode": "beat",
@@ -100,6 +102,7 @@ Run `vje` in any terminal while `vgalizer` is running. Two processes, one config
 }
 ```
 
+- `audio_auto_swap: true` enables HDA mic/line-in jack hot-swap (see Features). Ignored when `audio_device` is set to a specific device — an explicit override always wins.
 - `disabled_effects: null` rotates all 26 effects. Set to a list (deny list) to skip specific ones — new effects added in code updates stay enabled by default.
 - `fx_params.<effect>.<param>` overrides the default for that single param. Normally managed by `vje` or the `E` menu, but the file is human-readable if you want to hand-edit.
 - The watcher watches the **parent directory** of the XDG file (not the file itself) so atomic renames from `vje`, vim, or any other editor survive the reload.

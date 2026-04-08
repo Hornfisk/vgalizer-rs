@@ -68,6 +68,10 @@ pub struct BeatTracker {
     /// BPM lock window (inclusive, in beats per minute).
     bpm_min: f32,
     bpm_max: f32,
+    /// Frame counter for T6a instrumentation — throttles the periodic
+    /// debug dump in `update()` to once per ~1 s at 60 Hz audio updates.
+    /// Measurement only; does not affect tracker behavior.
+    dbg_frame: u32,
 }
 
 impl BeatTracker {
@@ -88,6 +92,7 @@ impl BeatTracker {
             sub_fired: 0,
             bpm_min: 120.0,
             bpm_max: 160.0,
+            dbg_frame: 0,
         }
     }
 
@@ -255,6 +260,45 @@ impl BeatTracker {
         }
 
         let bpm = 60.0 / self.interval as f32;
+
+        // T6a instrumentation — periodic dump of the tracker's internal
+        // state so a known-BPM track run on pingo can tell us why the
+        // lock never engages in real sets. Measurement only; tune
+        // LOCK_STDDEV_MAX / LOCK_WINDOW in a later commit after reading
+        // the log. Throttled to ~1 Hz at 60 Hz update rate.
+        self.dbg_frame = self.dbg_frame.wrapping_add(1);
+        if self.dbg_frame % 60 == 0 {
+            let flux_peak = self
+                .flux_history
+                .iter()
+                .copied()
+                .fold(0.0f32, f32::max);
+            let (ri_mean, ri_stddev) = if self.recent_intervals.len() >= 2 {
+                let n = self.recent_intervals.len() as f64;
+                let m = self.recent_intervals.iter().sum::<f64>() / n;
+                let v = self
+                    .recent_intervals
+                    .iter()
+                    .map(|x| (x - m) * (x - m))
+                    .sum::<f64>()
+                    / n;
+                (m, v.sqrt())
+            } else {
+                (0.0, 0.0)
+            };
+            log::debug!(
+                "beat-dbg: flux_peak={:.4} interval={:.4}s bpm={:.1} locked={} consec={} ri_len={} ri_mean={:.4}s ri_stddev={:.1}ms missed={}",
+                flux_peak,
+                self.interval,
+                bpm,
+                self.locked,
+                self.consec_in_window,
+                self.recent_intervals.len(),
+                ri_mean,
+                ri_stddev * 1000.0,
+                self.missed_beats
+            );
+        }
 
         BeatState { beat, half_beat, quarter_beat, bpm }
     }

@@ -11,4 +11,5 @@ pub mod gpu;
 pub mod input;
 pub mod overlay;
 pub mod postprocess;
+pub mod system_stats;
 pub mod text;

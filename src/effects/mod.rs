@@ -18,7 +18,6 @@ pub const EFFECT_NAMES: &[&str] = &[
     // v2 additions (techno / minimal / op-art set)
     "line_moire",
     "mandelbrot_zoom",
-    "strange_attractor",
     "wire_tunnel",
     "voronoi_pulse",
     // v3 additions (vector / scope / cymatics set)
@@ -60,7 +59,6 @@ fn effect_source(name: &str) -> &'static str {
         // v2 additions
         "line_moire" => effect_src!("line_moire"),
         "mandelbrot_zoom" => effect_src!("mandelbrot_zoom"),
-        "strange_attractor" => effect_src!("strange_attractor"),
         "wire_tunnel" => effect_src!("wire_tunnel"),
         "voronoi_pulse" => effect_src!("voronoi_pulse"),
         // v3 additions

@@ -21,6 +21,11 @@ pub struct Config {
     pub vga_noise: f32,
     pub vga_sync: f32,
     pub mirror_pool: Vec<String>,
+    /// Seconds between automatic mirror-mode rotations within a single
+    /// scene. Multiplies visual variety: with a 30s scene and a 6s mirror
+    /// interval you get ~5 different mirror framings per effect. `0`
+    /// disables auto-cycling (only scene switches and manual P change it).
+    pub mirror_cycle_interval: f64,
     pub mirror_alpha: u32,
     pub mirror_count: u32,
     pub mirror_spread: i32,
@@ -60,6 +65,7 @@ impl Default for Config {
                 "mirror_quad".to_string(),
                 "kaleido".to_string(),
             ],
+            mirror_cycle_interval: 6.0,
             mirror_alpha: 160,
             mirror_count: 6,
             mirror_spread: 8,

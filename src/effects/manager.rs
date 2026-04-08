@@ -32,6 +32,18 @@ impl MirrorMode {
             _ => MirrorMode::None,
         }
     }
+    /// Deterministic cycle order for the P key. Walks all five variants and
+    /// wraps around — independent of the mirror_pool, which can contain
+    /// duplicates for weighting the autopilot's random draws.
+    pub fn next(self) -> Self {
+        match self {
+            MirrorMode::None => MirrorMode::H,
+            MirrorMode::H => MirrorMode::V,
+            MirrorMode::V => MirrorMode::Quad,
+            MirrorMode::Quad => MirrorMode::Kaleido,
+            MirrorMode::Kaleido => MirrorMode::None,
+        }
+    }
 }
 
 pub struct SceneManager {
@@ -45,6 +57,10 @@ pub struct SceneManager {
     current_mirror: MirrorMode,
     last_switch: Instant,
     scene_duration: f64,
+    /// Independent mirror auto-cycle timer. Rotates the mirror mode
+    /// mid-scene to multiply visual variety. <= 0 disables auto-cycling.
+    mirror_cycle_interval: f64,
+    last_mirror_cycle: Instant,
     rng: rand::rngs::ThreadRng,
 }
 
@@ -53,6 +69,7 @@ impl SceneManager {
         effect_names: Vec<String>,
         mirror_pool_strs: &[String],
         scene_duration: f64,
+        mirror_cycle_interval: f64,
         disabled_filter: Option<&[String]>,
     ) -> Self {
         let mirror_pool: Vec<MirrorMode> = mirror_pool_strs.iter().map(|s| MirrorMode::from_str(s)).collect();
@@ -69,6 +86,7 @@ impl SceneManager {
         };
         // Pick a starting index that is enabled, if any.
         let current_index = enabled.iter().position(|&b| b).unwrap_or(0);
+        let now = Instant::now();
         Self {
             effect_names,
             enabled,
@@ -76,8 +94,10 @@ impl SceneManager {
             palette_index: 0,
             mirror_pool,
             current_mirror,
-            last_switch: Instant::now(),
+            last_switch: now,
             scene_duration,
+            mirror_cycle_interval,
+            last_mirror_cycle: now,
             rng,
         }
     }
@@ -138,12 +158,42 @@ impl SceneManager {
     }
 
     /// Called every frame. Returns true if the scene switched.
+    ///
+    /// Also drives the independent mirror auto-cycle timer: when the mirror
+    /// interval elapses without a scene switch, pick a fresh mirror from the
+    /// pool to multiply visual variety mid-scene. Scene switches already
+    /// randomize the mirror in `advance()`, so the mirror timer is reset
+    /// there too to avoid double-swaps in quick succession.
     pub fn update(&mut self, _beat: &BeatState) -> bool {
         if self.last_switch.elapsed().as_secs_f64() >= self.scene_duration {
             self.advance();
             return true;
         }
+        if self.mirror_cycle_interval > 0.0
+            && self.last_mirror_cycle.elapsed().as_secs_f64() >= self.mirror_cycle_interval
+        {
+            self.random_mirror_from_pool();
+            self.last_mirror_cycle = Instant::now();
+        }
         false
+    }
+
+    /// Draw a fresh mirror from the pool, trying to avoid picking the same
+    /// mode as the current one when the pool has more than one distinct
+    /// variant.
+    fn random_mirror_from_pool(&mut self) {
+        if self.mirror_pool.is_empty() {
+            return;
+        }
+        for _ in 0..6 {
+            let pick = self.mirror_pool[self.rng.gen_range(0..self.mirror_pool.len())];
+            if pick != self.current_mirror {
+                self.current_mirror = pick;
+                return;
+            }
+        }
+        // Pool is effectively single-mode — accept the redraw.
+        self.current_mirror = self.mirror_pool[self.rng.gen_range(0..self.mirror_pool.len())];
     }
 
     /// Advance to the next *enabled* effect (SPACE key or auto-switch).
@@ -160,7 +210,9 @@ impl SceneManager {
         self.current_index = i;
         self.palette_index = (self.palette_index + 1) % palette_count();
         self.current_mirror = self.mirror_pool[self.rng.gen_range(0..self.mirror_pool.len())];
-        self.last_switch = Instant::now();
+        let now = Instant::now();
+        self.last_switch = now;
+        self.last_mirror_cycle = now;
         log::info!(
             "Scene: {} | palette: {} | mirror: {:?}",
             self.current_effect(),
@@ -176,12 +228,20 @@ impl SceneManager {
         self.current_index = i;
         self.palette_index = (self.palette_index + 1) % palette_count();
         self.current_mirror = self.mirror_pool[self.rng.gen_range(0..self.mirror_pool.len())];
-        self.last_switch = Instant::now();
+        let now = Instant::now();
+        self.last_switch = now;
+        self.last_mirror_cycle = now;
     }
 
+    /// Manual P-key cycle. Walks the full MirrorMode enum with wraparound,
+    /// independent of `mirror_pool` — otherwise duplicates in the pool
+    /// (e.g. the default `[none, none, ...]`) trap cycling on None, since
+    /// `position()` always returns the first match.
     pub fn cycle_mirror(&mut self) {
-        let idx = self.mirror_pool.iter().position(|&m| m == self.current_mirror).unwrap_or(0);
-        self.current_mirror = self.mirror_pool[(idx + 1) % self.mirror_pool.len()];
+        self.current_mirror = self.current_mirror.next();
+        // User just expressed intent — give their pick a full interval to
+        // breathe before the auto-cycle considers swapping it.
+        self.last_mirror_cycle = Instant::now();
     }
 
     pub fn scene_progress(&self) -> f32 {
@@ -197,6 +257,17 @@ impl SceneManager {
     /// new duration takes effect on the next switch.
     pub fn set_scene_duration(&mut self, secs: f64) {
         self.scene_duration = secs.clamp(3.0, 300.0);
+    }
+
+    /// Update the mirror auto-cycle interval in seconds. `0.0` (or any
+    /// value below the min) disables auto-cycling; otherwise clamped to
+    /// 1..=120s. Does not reset the mirror timer.
+    pub fn set_mirror_cycle_interval(&mut self, secs: f64) {
+        self.mirror_cycle_interval = if secs <= 0.0 { 0.0 } else { secs.clamp(1.0, 120.0) };
+    }
+
+    pub fn mirror_cycle_interval(&self) -> f64 {
+        self.mirror_cycle_interval
     }
 
     /// Replace the mirror pool used by autopilot scene switches. The current

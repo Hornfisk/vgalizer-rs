@@ -1,5 +1,50 @@
 # Changelog
 
+## 2026-04-08 — ravebox dual-display mirror + soak test tooling
+
+### Added
+- **`scripts/vjtest.sh`** — bounded, monitored soak-run harness for vgalizer.
+  Three modes: `headless` (SSH-safe via `WLR_BACKENDS=headless cage -- vgalizer`,
+  exercises the full render + post + blit pipeline with no physical display),
+  `windowed` (native `vgalizer --windowed` inside an existing session), and
+  `cage` (real cage kiosk on the physical tty, the production path).
+  Captures stdout/stderr, periodic RSS samples, and on exit prints a summary
+  with peak RSS, fps from the `perf:` log lines, beat-lock counts,
+  scene-switch count, and any warnings/errors. `^C` safe — the trap runs
+  the summarizer on any exit path. Shell aliases: `vjtestshort` (1 min
+  headless), `vjtestfull` (45 min headless), `vjtestcage` (45 min cage tty).
+- **`CLAUDE.md`** — project-level Claude instructions documenting the pingo
+  stack (Debian 13, cage, PipeWire), the cage invocation pattern
+  (`cage -- bash -c "cd <dir> && exec <bin>"`), and hard rules for working
+  on the live box (vim only, single-line SSH pastes, no Arch assumptions).
+- **`ravebox-runbook.md`** — the long-form operational runbook for pingo
+  (the ThinkPad E480 live visualizer box): install history, PipeWire
+  lockdown config, hardware notes, boot flow, reliability locks, and
+  phase checklist. Lives in-repo so it travels with the code.
+
+### Fixed
+- **`scripts/vjtest.sh` summary now reads from stderr.** vgalizer's
+  `env_logger` writes to stderr by default, so the `perf:`, `beat:`,
+  `Scene:`, and `reload:` greps the summarizer was running against
+  `stdout.log` always came back empty even on healthy runs. Moved the
+  greps to `stderr.log` and replaced `grep -c … || echo 0` (which
+  printed `0\n0` when grep matched zero lines) with an `awk` counter
+  that always returns a clean integer.
+
+### Ravebox (local to pingo, not in this repo)
+- **cage 0.2.0-2 patched for dual-display mirror.** Stock cage on Debian 13
+  has no mirror mode — `-m extend` cascades outputs side-by-side, `-m last`
+  uses only the last connector. On the E480 with eDP-1 (1366×768 laptop
+  panel) + HDMI-A-1 (1366×768 to 720p projector) both connected, extend
+  mode splits the vgalizer view across the two panels. Fix: patched the
+  Debian source package's `output.c` — replaced the body of
+  `output_layout_add_auto()` to pin every output to `(0,0)` via the
+  existing `wlr_output_layout_add(..., 0, 0)` helper, so wlroots' scene
+  graph renders the same scene into both scene_outputs. Installed at
+  `/usr/bin/cage`, held with `apt-mark hold cage`. Rebuild workspace
+  and `install.py` one-shot installer live at
+  `/home/natalia/build/cage-mirror/` on pingo.
+
 ## 2026-04-07
 
 ### Added

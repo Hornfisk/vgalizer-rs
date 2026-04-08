@@ -47,6 +47,19 @@ pub enum Action {
     GlobalSettingsRight(bool),
     GlobalSettingsConfirm,
     GlobalSettingsCancel,
+    // Unified vje-style overlay (V) — deep cross-effect param editor
+    // with a viz-shrink preview. See src/text/vje_overlay.rs.
+    ToggleVjeOverlay,
+    VjeUp,
+    VjeDown,
+    VjeLeft(bool),   // bool = fast (Shift held)
+    VjeRight(bool),
+    VjeTab,
+    VjeFocusSwap,    // Space: toggle focus between effect list and params
+    VjeEnter,
+    VjeEsc,
+    VjeReset,
+    VjeToggleDisable,
 }
 
 pub struct InputHandler {
@@ -55,6 +68,7 @@ pub struct InputHandler {
     pub param_editor_open: bool,
     pub effects_menu_open: bool,
     pub global_settings_open: bool,
+    pub vje_open: bool,
     pub shift_held: bool,
 }
 
@@ -66,6 +80,7 @@ impl InputHandler {
             param_editor_open: false,
             effects_menu_open: false,
             global_settings_open: false,
+            vje_open: false,
             shift_held: false,
         }
     }
@@ -87,6 +102,26 @@ impl InputHandler {
         // A always toggles the picker regardless of mode
         if key == KeyCode::KeyA {
             return Some(Action::ToggleAudioPicker);
+        }
+
+        // Unified vje overlay consumes nav keys exclusively while open.
+        // Ordering: checked before the three single-purpose overlays below
+        // so V can coexist with E/M/G without key-conflict ambiguity.
+        if self.vje_open {
+            return match key {
+                KeyCode::ArrowUp    => Some(Action::VjeUp),
+                KeyCode::ArrowDown  => Some(Action::VjeDown),
+                KeyCode::ArrowLeft  => Some(Action::VjeLeft(self.shift_held)),
+                KeyCode::ArrowRight => Some(Action::VjeRight(self.shift_held)),
+                KeyCode::Tab        => Some(Action::VjeTab),
+                KeyCode::Space      => Some(Action::VjeFocusSwap),
+                KeyCode::Enter | KeyCode::NumpadEnter => Some(Action::VjeEnter),
+                KeyCode::Escape     => Some(Action::VjeEsc),
+                KeyCode::KeyR       => Some(Action::VjeReset),
+                KeyCode::KeyX       => Some(Action::VjeToggleDisable),
+                KeyCode::KeyV       => Some(Action::ToggleVjeOverlay),
+                _ => None,
+            };
         }
 
         // Effects menu consumes nav keys exclusively while open. Plain
@@ -181,6 +216,7 @@ impl InputHandler {
             KeyCode::KeyE => Some(Action::ToggleParamEditor),
             KeyCode::KeyM => Some(Action::ToggleEffectsMenu),
             KeyCode::KeyG => Some(Action::ToggleGlobalSettings),
+            KeyCode::KeyV => Some(Action::ToggleVjeOverlay),
             KeyCode::KeyQ | KeyCode::Escape => Some(Action::Quit),
             _ => None,
         }

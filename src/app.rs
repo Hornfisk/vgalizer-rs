@@ -21,7 +21,10 @@ use crate::gpu::uniforms::pack_bands;
 use crate::input::{Action, InputHandler};
 use crate::overlay::HudOverlay;
 use crate::postprocess::PostProcessChain;
-use crate::text::{NameOverlay, ParamEditState, ParamsOverlay, TextInputOverlay};
+use crate::text::{
+    NameOverlay, ParamEditState, ParamsOverlay, TextInputOverlay,
+    VjeEffectsFocus, VjeOverlay, VjeOverlayState, VjeTab,
+};
 
 pub fn run(config: Config, config_path: String) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
@@ -62,6 +65,8 @@ struct AppState {
     effects_menu: Option<EffectsMenuState>,
     global_settings_overlay: GlobalSettingsOverlay,
     global_settings: Option<GlobalSettingsState>,
+    vje_overlay: VjeOverlay,
+    vje_state: Option<VjeOverlayState>,
     input: InputHandler,
     scene: SceneManager,
     beat_tracker: BeatTracker,
@@ -172,6 +177,7 @@ impl ApplicationHandler for App {
         let params_overlay = ParamsOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
         let effects_menu_overlay = EffectsMenuOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
         let global_settings_overlay = GlobalSettingsOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
+        let vje_overlay = VjeOverlay::new(&gpu.device, &gpu.queue, gpu.surface_format());
 
         let beat_tracker = BeatTracker::new(config.beat_sensitivity);
 
@@ -197,6 +203,8 @@ impl ApplicationHandler for App {
             effects_menu: None,
             global_settings_overlay,
             global_settings: None,
+            vje_overlay,
+            vje_state: None,
             input: InputHandler::new(),
             scene,
             beat_tracker,
@@ -503,6 +511,149 @@ impl ApplicationHandler for App {
                             state.effects_menu = None;
                             state.input.effects_menu_open = false;
                         }
+                        Action::ToggleVjeOverlay => {
+                            if state.vje_state.is_some() {
+                                state.vje_state = None;
+                                state.input.vje_open = false;
+                            } else {
+                                state.vje_state = Some(VjeOverlayState::open(&state.config));
+                                state.input.vje_open = true;
+                            }
+                        }
+                        Action::VjeUp => {
+                            if let Some(st) = &mut state.vje_state {
+                                match st.tab {
+                                    VjeTab::Effects => match st.effects_focus {
+                                        VjeEffectsFocus::List   => st.effect_list_up(),
+                                        VjeEffectsFocus::Params => st.param_up(),
+                                    },
+                                    VjeTab::Globals => st.global_up(),
+                                }
+                            }
+                        }
+                        Action::VjeDown => {
+                            if let Some(st) = &mut state.vje_state {
+                                match st.tab {
+                                    VjeTab::Effects => match st.effects_focus {
+                                        VjeEffectsFocus::List   => st.effect_list_down(),
+                                        VjeEffectsFocus::Params => st.param_down(),
+                                    },
+                                    VjeTab::Globals => st.global_down(),
+                                }
+                            }
+                        }
+                        Action::VjeLeft(fast) => {
+                            if let Some(st) = &mut state.vje_state {
+                                match st.tab {
+                                    VjeTab::Effects => {
+                                        if matches!(st.effects_focus, VjeEffectsFocus::Params) {
+                                            st.nudge_current_param(&mut state.config, -1, fast);
+                                        }
+                                    }
+                                    VjeTab::Globals => {
+                                        st.nudge_global(&mut state.config, -1, fast);
+                                    }
+                                }
+                            }
+                        }
+                        Action::VjeRight(fast) => {
+                            if let Some(st) = &mut state.vje_state {
+                                match st.tab {
+                                    VjeTab::Effects => {
+                                        if matches!(st.effects_focus, VjeEffectsFocus::Params) {
+                                            st.nudge_current_param(&mut state.config, 1, fast);
+                                        } else if matches!(st.effects_focus, VjeEffectsFocus::List) {
+                                            // Right arrow from list focus opens params —
+                                            // matches the standalone vje TUI behaviour.
+                                            st.focus_params();
+                                        }
+                                    }
+                                    VjeTab::Globals => {
+                                        st.nudge_global(&mut state.config, 1, fast);
+                                    }
+                                }
+                            }
+                        }
+                        Action::VjeTab => {
+                            if let Some(st) = &mut state.vje_state { st.switch_tab(); }
+                        }
+                        Action::VjeFocusSwap => {
+                            if let Some(st) = &mut state.vje_state {
+                                if matches!(st.tab, VjeTab::Effects) {
+                                    st.swap_effects_focus();
+                                }
+                            }
+                        }
+                        Action::VjeEnter => {
+                            if let Some(st) = &mut state.vje_state {
+                                let updates_owned = st.build_updates(&state.config);
+                                if updates_owned.is_empty() {
+                                    st.status = "nothing to commit".to_string();
+                                } else {
+                                    // write_xdg_fields takes &[(&str, Value)], so
+                                    // borrow the owned String keys.
+                                    let updates_ref: Vec<(&str, serde_json::Value)> =
+                                        updates_owned.iter()
+                                            .map(|(k, v)| (k.as_str(), v.clone()))
+                                            .collect();
+                                    match crate::config::write_xdg_fields(&updates_ref) {
+                                        Ok(()) => {
+                                            let n = updates_ref.len();
+                                            st.mark_committed();
+                                            st.status = format!("committed {} field(s)", n);
+                                            log::info!("vje overlay: committed {} fields", n);
+                                        }
+                                        Err(e) => {
+                                            st.status = format!("commit failed: {}", e);
+                                            log::warn!("vje overlay: commit failed: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Action::VjeEsc => {
+                            // Esc inside params → back to list; from list →
+                            // close the overlay (mirrors vje TUI behaviour).
+                            if let Some(st) = &mut state.vje_state {
+                                let close = match st.tab {
+                                    VjeTab::Effects => matches!(st.effects_focus, VjeEffectsFocus::List),
+                                    VjeTab::Globals => true,
+                                };
+                                if close {
+                                    state.vje_state = None;
+                                    state.input.vje_open = false;
+                                } else if let Some(st) = &mut state.vje_state {
+                                    st.focus_list();
+                                }
+                            }
+                        }
+                        Action::VjeReset => {
+                            if let Some(st) = &mut state.vje_state {
+                                match st.tab {
+                                    VjeTab::Effects => {
+                                        if matches!(st.effects_focus, VjeEffectsFocus::Params) {
+                                            st.reset_current_param(&mut state.config);
+                                        }
+                                    }
+                                    VjeTab::Globals => st.reset_global(&mut state.config),
+                                }
+                            }
+                        }
+                        Action::VjeToggleDisable => {
+                            if let Some(st) = &mut state.vje_state {
+                                if matches!(st.tab, VjeTab::Effects)
+                                    && matches!(st.effects_focus, VjeEffectsFocus::List)
+                                {
+                                    st.toggle_disabled(&mut state.config);
+                                    // Also update the scene's live filter so
+                                    // the change takes effect for the preview
+                                    // without waiting for the commit+watcher.
+                                    state.scene.set_disabled_filter(
+                                        state.config.disabled_effects.as_deref(),
+                                    );
+                                }
+                            }
+                        }
                         Action::PickerConfirm => {
                             // Extract name before dropping picker (releases borrow)
                             let name = state
@@ -800,6 +951,35 @@ impl App {
             &post,
         );
 
+        // --- Compute viz + panel rects ---
+        //
+        // When the unified vje overlay is open, shrink the blit viewport
+        // to a right-side preview rect and reserve the left for the
+        // editor panel. The effect rendering + post chain stay at full
+        // resolution; only the final blit-to-swapchain is scissored.
+        // Proportional layout so it looks reasonable at any surface
+        // size, not just pingo's 1366×768.
+        let (sw, sh) = state.gpu.size;
+        let vje_open = state.vje_state.is_some();
+        let (vx, vy, vw, vh, panel_rect) = if vje_open {
+            let sw_f = sw as f32;
+            let sh_f = sh as f32;
+            // Panel takes left 48% of the surface, preview gets the rest
+            // minus a small gutter on each side.
+            let gutter = 16.0;
+            let panel_w = (sw_f * 0.48).floor();
+            let preview_col_x = panel_w + gutter;
+            let preview_col_w = (sw_f - preview_col_x - gutter).max(1.0);
+            // Preview is 16:9, fit inside the available column, centered
+            // vertically.
+            let (pw, ph) = fit_aspect(preview_col_w, sh_f - gutter * 2.0, 16.0 / 9.0);
+            let px = preview_col_x + (preview_col_w - pw) * 0.5;
+            let py = (sh_f - ph) * 0.5;
+            (px, py, pw, ph, (0.0, 0.0, panel_w, sh_f))
+        } else {
+            (0.0, 0.0, sw as f32, sh as f32, (0.0, 0.0, 0.0, 0.0))
+        };
+
         // --- Blit to swapchain ---
         {
             let sampler = crate::gpu::pipeline::create_sampler(&state.gpu.device);
@@ -833,29 +1013,42 @@ impl App {
             });
             pass.set_pipeline(&state.blit_pipeline);
             pass.set_bind_group(0, &blit_bg, &[]);
+            // Scissor the viz to the preview sub-rect when the vje
+            // overlay is open. When it isn't, the viewport is the whole
+            // surface so the viz fills the window as before.
+            pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
             pass.draw(0..3, 0..1);
         }
 
         // --- Name overlay (rendered directly to swapchain) ---
-        state.name_overlay.render(
-            &state.gpu.device,
-            &state.gpu.queue,
-            &mut encoder,
-            &output_view,
-            state.gpu.size,
-            &pal,
-            state.pulse,
-            beat_state.beat,
-        );
+        // Suppressed while the vje overlay is open — the DJ name in the
+        // top-left would collide with the panel text. The overlay has
+        // its own title bar anyway.
+        if !vje_open {
+            state.name_overlay.render(
+                &state.gpu.device,
+                &state.gpu.queue,
+                &mut encoder,
+                &output_view,
+                state.gpu.size,
+                &pal,
+                state.pulse,
+                beat_state.beat,
+            );
+        }
 
         // --- HUD overlay ---
-        state.hud.render(
-            &state.gpu.device,
-            &state.gpu.queue,
-            &mut encoder,
-            &output_view,
-            state.gpu.size,
-        );
+        // Also suppressed while vje is open. The vje overlay carries its
+        // own status line, and the HUD text would overdraw the panel.
+        if !vje_open {
+            state.hud.render(
+                &state.gpu.device,
+                &state.gpu.queue,
+                &mut encoder,
+                &output_view,
+                state.gpu.size,
+            );
+        }
 
         // --- Param editor overlay (only when open) ---
         if let Some(ed) = &state.params_edit {
@@ -919,9 +1112,35 @@ impl App {
             );
         }
 
+        // --- Unified vje overlay (only when open) ---
+        // Rendered last so it draws on top of everything else, and uses
+        // the precomputed panel_rect so the layout is locked to the
+        // same proportional split that the blit viewport used above.
+        if let Some(st) = state.vje_state.as_mut() {
+            state.vje_overlay.update_text(st, &state.config);
+            state.vje_overlay.render(
+                &state.gpu.device,
+                &state.gpu.queue,
+                &mut encoder,
+                &output_view,
+                state.gpu.size,
+                panel_rect,
+            );
+        }
+
         state.gpu.queue.submit([encoder.finish()]);
         output.present();
     }
+}
+
+/// Fit a (width, height) rect with the given aspect ratio inside
+/// `(max_w, max_h)`, returning the largest rect that doesn't overflow.
+/// Used to letterbox the viz preview into whatever column is free beside
+/// the vje overlay panel.
+fn fit_aspect(max_w: f32, max_h: f32, aspect: f32) -> (f32, f32) {
+    let from_w = (max_w, max_w / aspect);
+    let from_h = (max_h * aspect, max_h);
+    if from_w.1 <= max_h { from_w } else { from_h }
 }
 
 /// Process a raw KeyEvent while the DJ-name text-input overlay is open.

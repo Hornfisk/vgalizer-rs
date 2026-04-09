@@ -7,8 +7,12 @@ fn default_beat_source() -> String {
 fn default_bpm_lock_min() -> f32 {
     120.0
 }
+/// T6a⁸ (2026-04-10): repurposed as "max detectable BPM" — the beat
+/// tracker's cooldown is `60 / bpm_lock_max` seconds. 180 BPM = 333 ms
+/// cooldown, which clamps blink rate comfortably above 4/4 EDM tempi
+/// (~170 BPM max) and filters most subdivision false-positives.
 fn default_bpm_lock_max() -> f32 {
-    160.0
+    180.0
 }
 fn default_render_scale() -> f32 {
     1.0

@@ -352,6 +352,14 @@ pub fn start_capture(
             .build_input_stream(
                 &config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    // cpal fires this callback synchronously at the real
+                    // audio rate (it's driven by ALSA/PipeWire's audio
+                    // thread, not a read loop on a buffered pipe), so
+                    // `Instant::now()` inside the callback IS the time
+                    // of the audio event. No de-burst pacing needed
+                    // here — the `spawn_subprocess_capture` path below
+                    // is where that matters (pw-cat/parec stdout is
+                    // bursty).
                     let (level, bands) = analyzer.process(data, channels);
                     audio_state.store_level(level);
                     audio_state.store_bands(&bands);
@@ -436,14 +444,28 @@ fn spawn_subprocess_capture(
 
     let thread = std::thread::spawn(move || {
         use std::io::Read;
-        let mut analyzer = AudioAnalyzer::new(44100);
-        // 512 stereo f32 frames = 4096 bytes
+        // Must match `pw-cat --rate=...` and `parec --rate=...` in the
+        // callers below. Kept in sync manually — both places hardcode
+        // 44100 today.
+        const SAMPLE_RATE: f64 = 44100.0;
+        // 512 stereo f32 frames = 4096 bytes → 11.6 ms of audio per
+        // block at 44.1 kHz. Used to de-burst the audio-thread clock:
+        // pw-cat and parec deliver in 100 ms lumps (their --latency
+        // arg), so stamping each block with the wall-clock instant the
+        // reader thread processed it would cluster ~9 blocks inside a
+        // few ms of wall time and the beat tracker would see phantom
+        // onsets at 200+ BPM. Instead we pace samples at the real
+        // audio rate during bursts and let wall clock catch up in
+        // between. See the T6a⁷ follow-up note in state.rs.
+        const BLOCK_DURATION: f64 = 512.0 / SAMPLE_RATE; // ≈ 0.01161 s
+        let mut analyzer = AudioAnalyzer::new(SAMPLE_RATE as u32);
         let mut buf = vec![0u8; 4096];
         // Pre-allocated f32 scratch, reused across blocks. Same length
         // as `buf / 4` (one f32 per 4 bytes). Avoids a per-block Vec
         // allocation in the subprocess reader thread.
         let mut samples: Vec<f32> = vec![0.0; buf.len() / 4];
         let mut reader = std::io::BufReader::with_capacity(65536, stdout);
+        let mut last_audio_t = 0.0_f64;
         loop {
             // Fill entire buffer before processing to get consistent chunk sizes.
             let mut filled = 0;
@@ -460,7 +482,9 @@ fn spawn_subprocess_capture(
             let (level, bands) = analyzer.process(&samples, 2);
             audio_state.store_level(level);
             audio_state.store_bands(&bands);
-            let t = audio_state.start.elapsed().as_secs_f64();
+            let now = audio_state.start.elapsed().as_secs_f64();
+            let t = now.max(last_audio_t + BLOCK_DURATION);
+            last_audio_t = t;
             audio_state.push_flux_sample(t, analyzer.kick_flux());
         }
     });

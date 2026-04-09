@@ -56,6 +56,7 @@ pub enum VjeEffectsFocus {
 pub enum ExtraGlobal {
     SceneDuration,
     BeatSensitivity,
+    BeatMaxBpm,
     FxSpeedMult,
 }
 
@@ -63,6 +64,7 @@ impl ExtraGlobal {
     pub const ALL: &'static [ExtraGlobal] = &[
         Self::SceneDuration,
         Self::BeatSensitivity,
+        Self::BeatMaxBpm,
         Self::FxSpeedMult,
     ];
 
@@ -70,6 +72,7 @@ impl ExtraGlobal {
         match self {
             Self::SceneDuration   => "scene_dur",
             Self::BeatSensitivity => "beat_sens",
+            Self::BeatMaxBpm      => "beat_maxbpm",
             Self::FxSpeedMult     => "fx_speed",
         }
     }
@@ -78,6 +81,9 @@ impl ExtraGlobal {
         match self {
             Self::SceneDuration   => "scene_duration",
             Self::BeatSensitivity => "beat_sensitivity",
+            // T6a⁸: bpm_lock_max repurposed as "max detectable BPM",
+            // driving the beat tracker's cooldown.
+            Self::BeatMaxBpm      => "bpm_lock_max",
             Self::FxSpeedMult     => "fx_speed_mult",
         }
     }
@@ -88,6 +94,7 @@ impl ExtraGlobal {
         match self {
             Self::SceneDuration   => (c.scene_duration as f32, 3.0, 120.0),
             Self::BeatSensitivity => (c.beat_sensitivity,       0.1, 5.0),
+            Self::BeatMaxBpm      => (c.bpm_lock_max,          60.0, 300.0),
             Self::FxSpeedMult     => (c.fx_speed_mult,          0.1, 4.0),
         }
     }
@@ -103,6 +110,12 @@ impl ExtraGlobal {
             Self::BeatSensitivity => {
                 c.beat_sensitivity = (c.beat_sensitivity + d * 0.05).clamp(0.1, 5.0);
             }
+            Self::BeatMaxBpm => {
+                // 2 BPM per slow tick, 20 per Shift. Fine-grain lets the
+                // user walk the cooldown into whatever clips the
+                // subdivisions without killing real kicks.
+                c.bpm_lock_max = (c.bpm_lock_max + d * 2.0).clamp(60.0, 300.0);
+            }
             Self::FxSpeedMult => {
                 c.fx_speed_mult = (c.fx_speed_mult + d * 0.05).clamp(0.1, 4.0);
             }
@@ -113,6 +126,7 @@ impl ExtraGlobal {
         match self {
             Self::SceneDuration   => json!(c.scene_duration),
             Self::BeatSensitivity => json!(c.beat_sensitivity),
+            Self::BeatMaxBpm      => json!(c.bpm_lock_max),
             Self::FxSpeedMult     => json!(c.fx_speed_mult),
         }
     }
@@ -378,6 +392,7 @@ impl VjeOverlayState {
             match extra {
                 ExtraGlobal::SceneDuration   => cfg.scene_duration   = default.scene_duration,
                 ExtraGlobal::BeatSensitivity => cfg.beat_sensitivity = default.beat_sensitivity,
+                ExtraGlobal::BeatMaxBpm      => cfg.bpm_lock_max     = default.bpm_lock_max,
                 ExtraGlobal::FxSpeedMult     => cfg.fx_speed_mult    = default.fx_speed_mult,
             }
             self.dirty_globals.insert(extra.config_key().to_string());

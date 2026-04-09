@@ -97,62 +97,16 @@
 use std::collections::VecDeque;
 
 const HISTORY: usize = 43;
-const COOLDOWN: f64 = 0.22;
+/// Default cooldown between accepted beats (seconds). Matches a max
+/// detectable BPM of 60/0.22 ≈ 272. At runtime this is overridden by
+/// `BeatTracker::cooldown`, which is driven live by the `bpm_lock_max`
+/// knob in the vje overlay (T6a⁸: repurposed as "max detectable BPM"
+/// since the PLL lock is gone).
+const DEFAULT_COOLDOWN: f64 = 0.22;
 
-/// How many consecutive well-spaced beats we need before locking.
+/// Kept for `recent_intervals` VecDeque capacity so the struct layout
+/// doesn't change even though T6a⁸ no longer uses the lock window.
 const LOCK_WINDOW: usize = 8;
-/// Maximum stddev of inter-beat intervals (seconds) inside the lock
-/// window. Previously 0.010 (10 ms), which was derived from theory
-/// without real-audio data. The T6a beat-dbg dump collected on pingo
-/// on 2026-04-08 showed `ri_stddev` ranging 32–382 ms (mean 111 ms) on
-/// real mixed music — the 10 ms threshold was unreachable by a factor
-/// of 3–40×, explaining 0 lock events across ~47 minutes of capture.
-/// 30 ms is the new ceiling: still tight enough that a steady 4/4 kick
-/// fits comfortably (the best observed moments touched ~32 ms, so a
-/// clean studio loop should dip below), but achievable on live mixed
-/// material. Expect pingo's next vjtest to actually log `beat: locked
-/// at X BPM` lines.
-const LOCK_STDDEV_MAX: f64 = 0.030;
-
-/// T6a''''' (2026-04-09): PLL phase-locked maintenance constants.
-///
-/// Once locked, the visible beat fires on the prediction grid and flux
-/// peaks are used only for phase correction + liveness checking. See
-/// the locked branch of `update()` for the full design, and the module
-/// doc comment at the top of the file for the iteration history.
-
-/// Phase tolerance (fraction of `interval`) for accepting a flux peak as
-/// a "hit" on a predicted beat. 27% at 130 BPM ≈ ±125 ms — wide enough
-/// to absorb the timing jitter of a real-hardware flux detector on
-/// live mixed audio, still comfortably narrower than a subdivision
-/// (0.5 fraction away from any grid point). T6a⁶ widened from 0.22
-/// after observing phase_err staying at 4–13 ms on clean locks while
-/// a neighbouring flux peak (another transient nearby) was being
-/// rejected at ~100–110 ms and running out the phase timeout.
-const PHASE_CORRECTION_TOL: f64 = 0.27;
-
-/// EMA α for nudging `last_beat` toward the measured flux-peak phase.
-/// 0.10 tracks drift of ~1 BPM/s comfortably without reacting to
-/// single-beat timing noise.
-const PHASE_CORRECTION_ALPHA: f64 = 0.10;
-
-/// Drop the lock if no flux peak has been accepted at all in this many
-/// seconds. Indicates the music has stopped or the source has gone
-/// silent. 2.5 s is roughly 5–6 beats at EDM tempi — long enough to
-/// ride through a riser/breakdown, short enough that a true dropout
-/// is caught quickly.
-const LOCK_DROPOUT_TIMEOUT: f64 = 2.5;
-
-/// Drop the lock if flux peaks are still arriving but none of them
-/// have landed within `PHASE_CORRECTION_TOL` of a predicted beat for
-/// this many seconds. Indicates the grid is phase-mislocked (almost
-/// always: we locked on a subdivision instead of the downbeat, so the
-/// grid fires halfway between real kicks). T6a⁶ widened from 2.0 → 5.0
-/// after a log showed clean locks with `phase_err` stable at 4–13 ms
-/// being killed because a 1–2 s gap in phase-matching flux peaks ran
-/// out the old 2.0 s timeout. 5.0 s ≈ 10 beats at 130 BPM — still short
-/// enough to catch a real subdivision mislock within one or two bars.
-const LOCK_PHASE_TIMEOUT: f64 = 5.0;
 
 #[derive(Clone, Debug)]
 pub struct BeatState {
@@ -183,7 +137,6 @@ pub struct BeatTracker {
     /// `locked` is true this is frozen at the snapped BPM grid point.
     interval: f64,
     locked: bool,
-    consec_in_window: usize,
     recent_intervals: VecDeque<f64>,
     /// Bitfield tracking which subdivisions of the current beat already
     /// fired. Bit 0 = main beat, bit 1 = half beat (1/8), bit 2 = first
@@ -214,6 +167,12 @@ pub struct BeatTracker {
     /// debug dump in `update()` to once per ~1 s at 60 Hz audio updates.
     /// Measurement only; does not affect tracker behavior.
     dbg_frame: u32,
+    /// T6a⁸ (2026-04-10): minimum seconds between accepted flux peaks.
+    /// Live-tunable via `set_bpm_lock_range(_, max)` where `max` is
+    /// reinterpreted as "max detectable BPM". Raising it filters out
+    /// subdivision false-positives (hats, snares) without touching
+    /// sensitivity, which only sets the flux magnitude threshold.
+    cooldown: f64,
 }
 
 impl BeatTracker {
@@ -228,7 +187,6 @@ impl BeatTracker {
             // locks in.
             interval: 60.0 / 140.0,
             locked: false,
-            consec_in_window: 0,
             recent_intervals: VecDeque::with_capacity(LOCK_WINDOW),
             sub_fired: 0,
             bpm_min: 120.0,
@@ -237,84 +195,26 @@ impl BeatTracker {
             last_phase_hit: -10.0,
             phase_err_ema: 0.0,
             dbg_frame: 0,
+            cooldown: DEFAULT_COOLDOWN,
         }
     }
 
     pub fn set_sensitivity(&mut self, s: f32) {
-        self.sensitivity = s.clamp(0.5, 3.0);
+        self.sensitivity = s.clamp(0.1, 5.0);
     }
 
-    /// Update the BPM lock window. Clamped to sane values. If the window
-    /// changes mid-set we drop any existing lock so the new bounds take
-    /// effect immediately on the next beat.
+    /// T6a⁸ (2026-04-10): `min` is ignored (the PLL lock window is
+    /// gone). `max` is reinterpreted as **max detectable BPM** and
+    /// directly drives the cooldown between accepted flux peaks. Raise
+    /// it to let the detector blink faster (catches more hats/subs);
+    /// lower it to clamp the blink rate and reject subdivision
+    /// false-positives. 180 = 333 ms cooldown is a good starting point
+    /// for 4/4 EDM where real kicks rarely exceed ~170 BPM.
     pub fn set_bpm_lock_range(&mut self, min: f32, max: f32) {
-        let lo = min.clamp(40.0, 300.0);
-        let hi = max.clamp(lo + 1.0, 300.0);
-        if (lo - self.bpm_min).abs() > 0.01 || (hi - self.bpm_max).abs() > 0.01 {
-            self.bpm_min = lo;
-            self.bpm_max = hi;
-            self.drop_lock();
-        }
-    }
-
-    fn drop_lock(&mut self) {
-        self.locked = false;
-        self.consec_in_window = 0;
-        self.recent_intervals.clear();
-        self.phase_err_ema = 0.0;
-        // Do not reset last_phase_hit / last_flux_peak; they're used
-        // by the new lock attempt to bootstrap its timeouts naturally
-        // after re-locking.
-    }
-
-    /// Snap an interval (seconds) to the nearest integer-BPM grid point
-    /// inside `[bpm_min, bpm_max]`. Returns the snapped interval.
-    fn snap_interval_to_grid(&self, interval: f64) -> f64 {
-        let bpm = 60.0 / interval;
-        let snapped_bpm = bpm
-            .round()
-            .clamp(self.bpm_min as f64, self.bpm_max as f64);
-        60.0 / snapped_bpm
-    }
-
-    /// T6a''' (2026-04-09): per-sample octave fold into the BPM window.
-    ///
-    /// The raw interval series from a flux detector on live music is a
-    /// chaotic mix of true kick→kick intervals, snare/hat false positives
-    /// that halve the interval, and missed kicks that double it. Pushing
-    /// all three into `recent_intervals` unfolded made `ri_stddev` 180–450
-    /// ms on the DJControl monitor capture (2026-04-09 arch session),
-    /// 6–15× the 30 ms lock threshold — the tracker could never lock.
-    ///
-    /// Folding each sample into the canonical octave `[min_iv, 2*min_iv)`
-    /// before pushing collapses the 3 populations into one cluster around
-    /// the true tempo. Samples that fold into `[min_iv, max_iv]` are
-    /// accepted; samples whose canonical residue lands above `max_iv`
-    /// (tempos outside the lock window, e.g. 108 BPM under a [120,160]
-    /// window) are rejected so they can't pollute the stddev.
-    ///
-    /// Bounded to 8 iterations to guarantee termination on any finite
-    /// input. For an interval already inside the canonical octave the
-    /// loop is a no-op.
-    fn fold_to_window(&self, iv: f64) -> Option<f64> {
-        let min_iv = 60.0 / self.bpm_max as f64;
-        let max_iv = 60.0 / self.bpm_min as f64;
-        let canonical_hi = 2.0 * min_iv;
-        let mut x = iv;
-        for _ in 0..8 {
-            if x >= canonical_hi {
-                x *= 0.5;
-            } else if x < min_iv {
-                x *= 2.0;
-            } else {
-                break;
-            }
-        }
-        if x >= min_iv && x <= max_iv {
-            Some(x)
-        } else {
-            None
-        }
+        let hi = max.clamp(40.0, 600.0);
+        self.bpm_min = min;
+        self.bpm_max = hi;
+        self.cooldown = 60.0 / hi as f64;
     }
 
     /// Called every frame with the current flux sample and wall-clock time.
@@ -332,171 +232,38 @@ impl BeatTracker {
 
         let mut beat = false;
 
-        // --- Locked mode: grid-driven beat prediction ---
+        // --- Direct onset-triggered beat (T6a⁸, 2026-04-10) ---
         //
-        // T6a'''' (2026-04-09): once the tracker is locked, the visible
-        // beat fires on the prediction grid (`last_beat + k*interval`),
-        // NOT on raw flux peaks. This fixes two problems that persisted
-        // through T6a''' on the Arch/DJControl monitor capture:
-        //   1. `beat = true` was set on every accepted flux peak, so
-        //      subdivision false positives (hats, snares) produced
-        //      visible double beats between real kicks.
-        //   2. The locked drift check ate raw elapsed intervals, so 3
-        //      off-grid flux peaks in a row killed the lock within ~1 s.
-        // Both go away by decoupling the visual pulse from the flux
-        // stream once we trust the tempo.
+        // The PLL / tempo-lock path was removed after multiple rounds of
+        // empirical tuning failed to lock reliably on real mixed music
+        // from a DJ controller. The lock window repeatedly snapped to
+        // subdivisions or partial-fractional tempos (9/8 inflation etc.)
+        // because real-hardware flux only catches a fraction of kicks
+        // plus stray subdivision transients, and the stddev of the
+        // resulting interval set was too noisy for any reasonable grid
+        // snap to survive more than a few seconds.
         //
-        // In practice this `while` runs 0 or 1 iterations per frame
-        // (frame ~16 ms ≪ beat ~450 ms). The loop form is defensive
-        // against a starved frame.
-        if self.locked {
-            while t >= self.last_beat + self.interval {
-                self.last_beat += self.interval;
-                beat = true;
-                self.sub_fired = 0b0001;
-            }
-        }
-
-        // --- Flux-peak handling ---
+        // New behaviour: every flux peak that clears the adaptive
+        // threshold + cooldown fires `beat = true` directly. No grid
+        // prediction, no phase correction, no lock state. The visual
+        // pulse is exactly the onset detector output — if the detector
+        // misses a kick the visual misses it too, and if it catches a
+        // hat the visual pulses on the hat. That's the honest signal,
+        // and it's dramatically more reliable than a drifting PLL.
         //
-        // Threshold on flux, not on smoothed RMS. `flux > avg * sensitivity`
-        // picks the transient peaks — the kick — while ignoring steady
-        // bass content that would raise the RMS without providing a
-        // musical beat. Cooldown anchored on `last_flux_peak` (not
-        // `last_beat`) because in locked mode `last_beat` advances on
-        // the grid and would keep the cooldown gate permanently open.
+        // `interval` is still EMA-updated so the HUD BPM readout and
+        // the subdivision timing (1/8, 1/16) below remain meaningful.
         if flux > avg * self.sensitivity
-            && (t - self.last_flux_peak) > COOLDOWN
+            && (t - self.last_beat) > self.cooldown
         {
+            let elapsed = t - self.last_beat;
+            if elapsed > 0.2 && elapsed < 2.5 {
+                self.interval = self.interval * 0.85 + elapsed * 0.15;
+            }
+            self.last_beat = t;
             self.last_flux_peak = t;
-
-            if self.locked {
-                // Locked path: use the flux peak for phase correction +
-                // liveness marking only. Do NOT set `beat = true` here —
-                // the visible beat is already driven from the grid
-                // prediction block above.
-                //
-                // Find the closest predicted beat: either the one we
-                // just fired (`last_beat`) or the next one
-                // (`last_beat + interval`). The signed phase error `err`
-                // is the distance from that prediction to `t`. If the
-                // flux peak is within ±PHASE_CORRECTION_TOL of the
-                // closest predicted beat, count it as a hit and nudge
-                // `last_beat` toward the measured phase by α. Otherwise
-                // the flux peak is a subdivision/false positive — ignore
-                // it entirely.
-                let phase_to_current = t - self.last_beat;
-                let phase_to_next = (self.last_beat + self.interval) - t;
-                let (err, target) = if phase_to_current.abs() <= phase_to_next.abs() {
-                    (phase_to_current, t)
-                } else {
-                    (-phase_to_next, t - self.interval)
-                };
-
-                if err.abs() < self.interval * PHASE_CORRECTION_TOL {
-                    self.last_beat = self.last_beat * (1.0 - PHASE_CORRECTION_ALPHA)
-                        + target * PHASE_CORRECTION_ALPHA;
-                    self.last_phase_hit = t;
-                    self.phase_err_ema = self.phase_err_ema * 0.9 + err * 0.1;
-                }
-            } else {
-                // Unlocked path: flux peak drives the visible beat and
-                // feeds the lock-window evaluator. Unchanged from T6a'''.
-                let elapsed = t - self.last_beat;
-                beat = true;
-
-                if elapsed > 0.2 && elapsed < 2.5 {
-                    // Free-floating EMA fallback.
-                    self.interval = self.interval * 0.85 + elapsed * 0.15;
-
-                    // Feed the lock-window evaluator. T6a''' (2026-04-09):
-                    // per-sample octave fold into the BPM window before
-                    // pushing. This turns a chaotic mix of true beats,
-                    // snare/hat halves and missed-kick doubles into a
-                    // tight tempo cluster. Samples whose canonical
-                    // octave residue falls outside [min_iv, max_iv] are
-                    // rejected so they can't raise the window stddev.
-                    if let Some(folded) = self.fold_to_window(elapsed) {
-                        if self.recent_intervals.len() >= LOCK_WINDOW {
-                            self.recent_intervals.pop_front();
-                        }
-                        self.recent_intervals.push_back(folded);
-
-                        if self.recent_intervals.len() >= LOCK_WINDOW {
-                            // Compute mean + stddev over the pre-folded
-                            // window. If stable, snap and lock.
-                            let n = self.recent_intervals.len() as f64;
-                            let mean = self.recent_intervals.iter().sum::<f64>() / n;
-                            let var = self
-                                .recent_intervals
-                                .iter()
-                                .map(|x| (x - mean) * (x - mean))
-                                .sum::<f64>()
-                                / n;
-                            let stddev = var.sqrt();
-
-                            if stddev < LOCK_STDDEV_MAX {
-                                let snapped = self.snap_interval_to_grid(mean);
-                                self.interval = snapped;
-                                self.locked = true;
-                                self.phase_err_ema = 0.0;
-                                // Bootstrap the phase-timeout clock: the
-                                // lock-triggering flux peak counts as
-                                // the initial phase hit.
-                                self.last_phase_hit = t;
-                                log::info!(
-                                    "beat: locked at {:.1} BPM (stddev={:.1}ms)",
-                                    60.0 / snapped,
-                                    stddev * 1000.0
-                                );
-                            }
-                        }
-                    }
-                }
-                self.last_beat = t;
-                // Reset subdivision bitfield for the new beat; bit 0 =
-                // main beat fired.
-                self.sub_fired = 0b0001;
-            }
-        }
-
-        // --- Liveness check (locked mode only) ---
-        //
-        // T6a''''' replaces the earlier rolling-hit-rate liveness window
-        // with two independent timeout-based drop conditions:
-        //
-        //   1. LOCK_DROPOUT_TIMEOUT — no accepted flux peak at all for
-        //      this long. The music has stopped or the audio source has
-        //      gone silent. Drop and let the unlocked path re-measure
-        //      when flux returns.
-        //
-        //   2. LOCK_PHASE_TIMEOUT — flux peaks are still arriving but
-        //      none of them have landed in the phase window. Almost
-        //      always this means we locked on a subdivision rather than
-        //      the downbeat, and the grid is firing halfway between
-        //      real kicks. Drop so the next lock attempt can land the
-        //      grid on a different flux peak and (statistically) catch
-        //      the correct phase.
-        //
-        // The hit-rate window failed on the DJControl monitor source
-        // because flux detection only caught ~50 % of real kicks; hit
-        // rate bounced around 1–2/6 and the lock died every 2–4 s.
-        // Timeout-based checks are decoupled from the detection rate
-        // and stay green as long as *some* flux is arriving.
-        if self.locked {
-            if t - self.last_flux_peak > LOCK_DROPOUT_TIMEOUT {
-                log::info!(
-                    "beat: lock dropped (no flux for {:.1}s)",
-                    t - self.last_flux_peak
-                );
-                self.drop_lock();
-            } else if t - self.last_phase_hit > LOCK_PHASE_TIMEOUT {
-                log::info!(
-                    "beat: lock dropped (no phase hit for {:.1}s — probable subdivision mislock)",
-                    t - self.last_phase_hit
-                );
-                self.drop_lock();
-            }
+            beat = true;
+            self.sub_fired = 0b0001;
         }
 
         // --- Subdivision prediction ---
@@ -576,51 +343,19 @@ impl BeatTracker {
             );
         }
 
-        BeatState { beat, half_beat, quarter_beat, bpm, locked: self.locked }
+        BeatState { beat, half_beat, quarter_beat, bpm, locked: false }
     }
 
-    /// Advance the tracker's time-based state (locked-grid prediction,
-    /// subdivision firing, liveness timeouts) WITHOUT consuming a flux
+    /// Advance the tracker's subdivision state WITHOUT consuming a flux
     /// sample. Used by the render thread between drained audio-thread
-    /// flux samples, so the visible beat fires at render wall-clock
-    /// rather than being quantized to audio-block arrival.
-    ///
-    /// Does not touch `flux_history` or any adaptive-threshold state —
-    /// only drains the grid clock to `t`. Safe to call with a `t` that
-    /// is later than the most recent `update(_, t_audio)` call; in that
-    /// case any grid beats between `t_audio` and `t` are fired here.
+    /// flux samples so the 1/8 and 1/16 pulses fire at render wall-clock
+    /// rather than being quantized to audio-block arrival. Post-T6a⁸
+    /// there is no locked-grid prediction, so this only drains the
+    /// subdivision bitfield.
     pub fn tick(&mut self, t: f64) -> BeatState {
-        let mut beat = false;
-
-        // Locked-mode grid advance — same loop as `update()`.
-        if self.locked {
-            while t >= self.last_beat + self.interval {
-                self.last_beat += self.interval;
-                beat = true;
-                self.sub_fired = 0b0001;
-            }
-        }
-
-        // Liveness check — also identical to `update()`.
-        if self.locked {
-            if t - self.last_flux_peak > LOCK_DROPOUT_TIMEOUT {
-                log::info!(
-                    "beat: lock dropped (no flux for {:.1}s)",
-                    t - self.last_flux_peak
-                );
-                self.drop_lock();
-            } else if t - self.last_phase_hit > LOCK_PHASE_TIMEOUT {
-                log::info!(
-                    "beat: lock dropped (no phase hit for {:.1}s — probable subdivision mislock)",
-                    t - self.last_phase_hit
-                );
-                self.drop_lock();
-            }
-        }
-
-        // Subdivisions (1/8 and 1/16 grid) — single-fire via sub_fired.
-        let mut half_beat = beat;
-        let mut quarter_beat = beat;
+        let beat = false;
+        let mut half_beat = false;
+        let mut quarter_beat = false;
         if self.last_beat > 0.0 {
             let e = t - self.last_beat;
             let iv = self.interval;
@@ -640,6 +375,6 @@ impl BeatTracker {
         }
 
         let bpm = 60.0 / self.interval as f32;
-        BeatState { beat, half_beat, quarter_beat, bpm, locked: self.locked }
+        BeatState { beat, half_beat, quarter_beat, bpm, locked: false }
     }
 }

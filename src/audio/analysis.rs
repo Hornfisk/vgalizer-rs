@@ -21,12 +21,12 @@ const PEAK_FLOOR: f32 = 0.001;
 const PEAK_DECAY: f32 = 0.9997;
 
 /// Number of low-frequency bands to sum for kick-energy detection. At
-/// 44.1 kHz with N_FFT=512 and the (i/N)^0.65 log mapping, bands [0..4]
-/// cover roughly low-bass through low-mid (~86–430 Hz) — the part of
-/// the spectrum where kick transients live. Widening this range picks
-/// up too much bassline sustain; narrowing it misses un-compressed
-/// kicks.
-const KICK_LOW_BANDS: usize = 4;
+/// 44.1 kHz with N_FFT=512 and the (i/N)^0.65 log mapping, bands [0..2]
+/// cover roughly sub-bass and low-bass (~86–215 Hz) — the kick
+/// fundamental. T6a⁸ (2026-04-10): narrowed from 4 → 2 after the wider
+/// range caught too much snare body / bass note content and the pure
+/// onset detector was firing at ~230 BPM on ~150 BPM tracks.
+const KICK_LOW_BANDS: usize = 2;
 
 pub struct AudioAnalyzer {
     fft: Arc<dyn Fft<f32>>,

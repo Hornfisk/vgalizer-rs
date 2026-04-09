@@ -211,18 +211,45 @@ impl BeatTracker {
                         let stddev = var.sqrt();
                         let min_iv = 60.0 / self.bpm_max as f64;
                         let max_iv = 60.0 / self.bpm_min as f64;
+
+                        // T6a'' (2026-04-09): tempo-halving heuristic.
+                        // Pingo's afternoon report showed ri_stddev IS
+                        // reachable (min 5.4 ms) but BPM landed at
+                        // 200–240 — the flux detector is stable on
+                        // beat subdivisions (8ths), not downbeats.
+                        // Octave-fold the candidate interval into the
+                        // [bpm_min, bpm_max] window before the range
+                        // check: if too fast, double interval (halve
+                        // BPM); if too slow, halve interval (double
+                        // BPM). Bounded to 3 iterations so a wild
+                        // candidate can't spin.
+                        let mut candidate = mean;
+                        let mut folds: i32 = 0;
+                        for _ in 0..3 {
+                            if candidate < min_iv {
+                                candidate *= 2.0;
+                                folds += 1;
+                            } else if candidate > max_iv {
+                                candidate *= 0.5;
+                                folds -= 1;
+                            } else {
+                                break;
+                            }
+                        }
+
                         if stddev < LOCK_STDDEV_MAX
-                            && mean >= min_iv
-                            && mean <= max_iv
+                            && candidate >= min_iv
+                            && candidate <= max_iv
                         {
-                            let snapped = self.snap_interval_to_grid(mean);
+                            let snapped = self.snap_interval_to_grid(candidate);
                             self.interval = snapped;
                             self.locked = true;
                             self.missed_beats = 0;
                             log::info!(
-                                "beat: locked at {:.1} BPM (stddev={:.1}ms)",
+                                "beat: locked at {:.1} BPM (stddev={:.1}ms fold={})",
                                 60.0 / snapped,
-                                stddev * 1000.0
+                                stddev * 1000.0,
+                                folds
                             );
                         }
                     }

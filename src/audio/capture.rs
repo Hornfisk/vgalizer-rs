@@ -355,7 +355,8 @@ pub fn start_capture(
                     let (level, bands) = analyzer.process(data, channels);
                     audio_state.store_level(level);
                     audio_state.store_bands(&bands);
-                    audio_state.store_kick_flux(analyzer.kick_flux());
+                    let t = audio_state.start.elapsed().as_secs_f64();
+                    audio_state.push_flux_sample(t, analyzer.kick_flux());
                 },
                 |err| log::error!("Audio stream error: {}", err),
                 None,
@@ -459,7 +460,8 @@ fn spawn_subprocess_capture(
             let (level, bands) = analyzer.process(&samples, 2);
             audio_state.store_level(level);
             audio_state.store_bands(&bands);
-            audio_state.store_kick_flux(analyzer.kick_flux());
+            let t = audio_state.start.elapsed().as_secs_f64();
+            audio_state.push_flux_sample(t, analyzer.kick_flux());
         }
     });
 

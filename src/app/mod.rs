@@ -115,9 +115,12 @@ pub(super) struct AppState {
     /// Live system metrics sampled at 1 Hz by a background thread and
     /// published via atomics. See `src/system_stats.rs` (T5).
     pub(super) system_stats: Arc<SystemStats>,
+    /// Scratch buffer reused across frames when draining audio-thread
+    /// flux samples out of `audio_state`. Reusing the `Vec` keeps the
+    /// render path alloc-free.
+    pub(super) flux_drain_scratch: Vec<(f64, f32)>,
 
     // Timing
-    pub(super) start: Instant,
     pub(super) last_frame: Instant,
     pub(super) last_beat_t: f64,
     pub(super) pulse: f32,
@@ -351,7 +354,7 @@ impl ApplicationHandler for App {
             config_watcher,
             config: self.config.clone(),
             system_stats: SystemStats::new(),
-            start: Instant::now(),
+            flux_drain_scratch: Vec::with_capacity(16),
             last_frame: Instant::now(),
             last_beat_t: 0.0,
             pulse: 0.0,

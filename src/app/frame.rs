@@ -106,7 +106,7 @@ pub(super) fn render_frame(state: &mut AppState) {
     }
 
     let now = Instant::now();
-    let t = state.start.elapsed().as_secs_f64();
+    let t = state.audio_state.start.elapsed().as_secs_f64();
     let dt = state.last_frame.elapsed().as_secs_f64().min(0.05) as f32;
     state.frame_times_ms.push(dt * 1000.0);
     state.frame_count += 1;
@@ -135,17 +135,42 @@ pub(super) fn render_frame(state: &mut AppState) {
     // Read audio
     let level = state.audio_state.load_level();
     let bands = state.audio_state.load_bands();
-    let kick_flux = state.audio_state.load_kick_flux();
 
-    // Beat detection — flux path is sharp, RMS path is the legacy
-    // fallback toggled via `beat_source` in the XDG config so a
-    // problematic track can be recovered mid-set without a restart.
-    let beat_input = if state.config.beat_source == "rms" {
-        level
+    // Beat detection. The flux path drains every (t_audio, flux) sample
+    // the audio thread has pushed since the last frame and feeds each to
+    // the tracker in order. This is what fixes the T6a 9/8 bug: the old
+    // path polled a single atomic once per render frame, silently losing
+    // ~30 % of audio blocks (86 Hz audio vs 60 Hz render) which the
+    // tracker interpreted as missed kicks → inflated IOIs. The RMS path
+    // is the legacy fallback toggled via `beat_source` in the XDG config
+    // so a problematic track can be recovered mid-set without a restart.
+    let beat_state = if state.config.beat_source == "rms" {
+        state.beat_tracker.update(level, t)
     } else {
-        kick_flux
+        state
+            .audio_state
+            .drain_flux_samples(&mut state.flux_drain_scratch);
+        let mut agg_beat = false;
+        let mut agg_half = false;
+        let mut agg_quarter = false;
+        for &(ts, flux) in state.flux_drain_scratch.iter() {
+            let bs = state.beat_tracker.update(flux, ts);
+            agg_beat |= bs.beat;
+            agg_half |= bs.half_beat;
+            agg_quarter |= bs.quarter_beat;
+        }
+        // Tick the tracker forward to the current render time so
+        // locked-mode grid beats that fall between the last audio
+        // sample and `t` fire on this frame, not one frame late.
+        let tick = state.beat_tracker.tick(t);
+        crate::audio::BeatState {
+            beat: agg_beat || tick.beat,
+            half_beat: agg_half || tick.half_beat,
+            quarter_beat: agg_quarter || tick.quarter_beat,
+            bpm: tick.bpm,
+            locked: tick.locked,
+        }
     };
-    let beat_state = state.beat_tracker.update(beat_input, t);
 
     // Update pulse (decays between beats)
     if beat_state.beat {

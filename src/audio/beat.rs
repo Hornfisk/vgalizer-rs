@@ -138,6 +138,46 @@ impl BeatTracker {
         60.0 / snapped_bpm
     }
 
+    /// T6a''' (2026-04-09): per-sample octave fold into the BPM window.
+    ///
+    /// The raw interval series from a flux detector on live music is a
+    /// chaotic mix of true kick→kick intervals, snare/hat false positives
+    /// that halve the interval, and missed kicks that double it. Pushing
+    /// all three into `recent_intervals` unfolded made `ri_stddev` 180–450
+    /// ms on the DJControl monitor capture (2026-04-09 arch session),
+    /// 6–15× the 30 ms lock threshold — the tracker could never lock.
+    ///
+    /// Folding each sample into the canonical octave `[min_iv, 2*min_iv)`
+    /// before pushing collapses the 3 populations into one cluster around
+    /// the true tempo. Samples that fold into `[min_iv, max_iv]` are
+    /// accepted; samples whose canonical residue lands above `max_iv`
+    /// (tempos outside the lock window, e.g. 108 BPM under a [120,160]
+    /// window) are rejected so they can't pollute the stddev.
+    ///
+    /// Bounded to 8 iterations to guarantee termination on any finite
+    /// input. For an interval already inside the canonical octave the
+    /// loop is a no-op.
+    fn fold_to_window(&self, iv: f64) -> Option<f64> {
+        let min_iv = 60.0 / self.bpm_max as f64;
+        let max_iv = 60.0 / self.bpm_min as f64;
+        let canonical_hi = 2.0 * min_iv;
+        let mut x = iv;
+        for _ in 0..8 {
+            if x >= canonical_hi {
+                x *= 0.5;
+            } else if x < min_iv {
+                x *= 2.0;
+            } else {
+                break;
+            }
+        }
+        if x >= min_iv && x <= max_iv {
+            Some(x)
+        } else {
+            None
+        }
+    }
+
     /// Called every frame with the current flux sample and wall-clock time.
     /// Returns the beat state (main beat, 1/8, 1/16 flags, current BPM).
     pub fn update(&mut self, flux: f32, t: f64) -> BeatState {
@@ -190,67 +230,46 @@ impl BeatTracker {
                     // Free-floating EMA fallback.
                     self.interval = self.interval * 0.85 + elapsed * 0.15;
 
-                    // Feed the lock-window evaluator.
-                    if self.recent_intervals.len() >= LOCK_WINDOW {
-                        self.recent_intervals.pop_front();
-                    }
-                    self.recent_intervals.push_back(elapsed);
-
-                    if self.recent_intervals.len() >= LOCK_WINDOW {
-                        // Compute mean + stddev over the window. If
-                        // stable *and* inside the BPM range, snap and
-                        // lock.
-                        let n = self.recent_intervals.len() as f64;
-                        let mean = self.recent_intervals.iter().sum::<f64>() / n;
-                        let var = self
-                            .recent_intervals
-                            .iter()
-                            .map(|x| (x - mean) * (x - mean))
-                            .sum::<f64>()
-                            / n;
-                        let stddev = var.sqrt();
-                        let min_iv = 60.0 / self.bpm_max as f64;
-                        let max_iv = 60.0 / self.bpm_min as f64;
-
-                        // T6a'' (2026-04-09): tempo-halving heuristic.
-                        // Pingo's afternoon report showed ri_stddev IS
-                        // reachable (min 5.4 ms) but BPM landed at
-                        // 200–240 — the flux detector is stable on
-                        // beat subdivisions (8ths), not downbeats.
-                        // Octave-fold the candidate interval into the
-                        // [bpm_min, bpm_max] window before the range
-                        // check: if too fast, double interval (halve
-                        // BPM); if too slow, halve interval (double
-                        // BPM). Bounded to 3 iterations so a wild
-                        // candidate can't spin.
-                        let mut candidate = mean;
-                        let mut folds: i32 = 0;
-                        for _ in 0..3 {
-                            if candidate < min_iv {
-                                candidate *= 2.0;
-                                folds += 1;
-                            } else if candidate > max_iv {
-                                candidate *= 0.5;
-                                folds -= 1;
-                            } else {
-                                break;
-                            }
+                    // Feed the lock-window evaluator. T6a''' (2026-04-09):
+                    // per-sample octave fold into the BPM window before
+                    // pushing. This turns a chaotic mix of true beats,
+                    // snare/hat halves and missed-kick doubles into a
+                    // tight tempo cluster. Samples whose canonical octave
+                    // residue falls outside [min_iv, max_iv] are rejected
+                    // so they can't raise the window stddev.
+                    if let Some(folded) = self.fold_to_window(elapsed) {
+                        if self.recent_intervals.len() >= LOCK_WINDOW {
+                            self.recent_intervals.pop_front();
                         }
+                        self.recent_intervals.push_back(folded);
 
-                        if stddev < LOCK_STDDEV_MAX
-                            && candidate >= min_iv
-                            && candidate <= max_iv
-                        {
-                            let snapped = self.snap_interval_to_grid(candidate);
-                            self.interval = snapped;
-                            self.locked = true;
-                            self.missed_beats = 0;
-                            log::info!(
-                                "beat: locked at {:.1} BPM (stddev={:.1}ms fold={})",
-                                60.0 / snapped,
-                                stddev * 1000.0,
-                                folds
-                            );
+                        if self.recent_intervals.len() >= LOCK_WINDOW {
+                            // Compute mean + stddev over the pre-folded
+                            // window. If stable, snap and lock — the
+                            // in-window check is unnecessary now because
+                            // every element is already guaranteed to be
+                            // in [min_iv, max_iv].
+                            let n = self.recent_intervals.len() as f64;
+                            let mean = self.recent_intervals.iter().sum::<f64>() / n;
+                            let var = self
+                                .recent_intervals
+                                .iter()
+                                .map(|x| (x - mean) * (x - mean))
+                                .sum::<f64>()
+                                / n;
+                            let stddev = var.sqrt();
+
+                            if stddev < LOCK_STDDEV_MAX {
+                                let snapped = self.snap_interval_to_grid(mean);
+                                self.interval = snapped;
+                                self.locked = true;
+                                self.missed_beats = 0;
+                                log::info!(
+                                    "beat: locked at {:.1} BPM (stddev={:.1}ms)",
+                                    60.0 / snapped,
+                                    stddev * 1000.0
+                                );
+                            }
                         }
                     }
                 }

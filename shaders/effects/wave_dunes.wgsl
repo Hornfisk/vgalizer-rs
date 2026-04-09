@@ -3,7 +3,17 @@
 // row-dependent time delay, so motion is alive from frame 1.
 
 const PI: f32 = 3.14159265359;
-const ROWS: i32 = 40;
+// T2d (2026-04-09): 40 → 24. wave_dunes became the next-heaviest scene
+// at 720p after T2c tuned voronoi_pulse and vector_terrain down, with
+// p50_med=23.51 ms on pingo's 45 min vjtestfull run. Each row is an
+// 8-band sin accumulation + smoothstep + color mix, so ALU cost scales
+// nearly linearly with ROWS. Cutting ~40% of rows should pull this
+// under the 16.67 ms frame budget at 720p; if it's still over at
+// 1080p cage, further cuts to the inner `b < 8` loop are the next
+// step. Conservative-first: visual perspective is preserved because
+// the rows interpolate across the same bottom_y..horizon_y range, just
+// with more spacing.
+const ROWS: i32 = 24;
 
 fn wave_at(i: i32, x: f32) -> f32 {
     let row_delay = f32(i) * 0.085;

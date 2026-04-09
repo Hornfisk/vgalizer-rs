@@ -578,4 +578,68 @@ impl BeatTracker {
 
         BeatState { beat, half_beat, quarter_beat, bpm, locked: self.locked }
     }
+
+    /// Advance the tracker's time-based state (locked-grid prediction,
+    /// subdivision firing, liveness timeouts) WITHOUT consuming a flux
+    /// sample. Used by the render thread between drained audio-thread
+    /// flux samples, so the visible beat fires at render wall-clock
+    /// rather than being quantized to audio-block arrival.
+    ///
+    /// Does not touch `flux_history` or any adaptive-threshold state —
+    /// only drains the grid clock to `t`. Safe to call with a `t` that
+    /// is later than the most recent `update(_, t_audio)` call; in that
+    /// case any grid beats between `t_audio` and `t` are fired here.
+    pub fn tick(&mut self, t: f64) -> BeatState {
+        let mut beat = false;
+
+        // Locked-mode grid advance — same loop as `update()`.
+        if self.locked {
+            while t >= self.last_beat + self.interval {
+                self.last_beat += self.interval;
+                beat = true;
+                self.sub_fired = 0b0001;
+            }
+        }
+
+        // Liveness check — also identical to `update()`.
+        if self.locked {
+            if t - self.last_flux_peak > LOCK_DROPOUT_TIMEOUT {
+                log::info!(
+                    "beat: lock dropped (no flux for {:.1}s)",
+                    t - self.last_flux_peak
+                );
+                self.drop_lock();
+            } else if t - self.last_phase_hit > LOCK_PHASE_TIMEOUT {
+                log::info!(
+                    "beat: lock dropped (no phase hit for {:.1}s — probable subdivision mislock)",
+                    t - self.last_phase_hit
+                );
+                self.drop_lock();
+            }
+        }
+
+        // Subdivisions (1/8 and 1/16 grid) — single-fire via sub_fired.
+        let mut half_beat = beat;
+        let mut quarter_beat = beat;
+        if self.last_beat > 0.0 {
+            let e = t - self.last_beat;
+            let iv = self.interval;
+            if e >= iv * 0.5 && (self.sub_fired & 0b0010) == 0 {
+                self.sub_fired |= 0b0010;
+                half_beat = true;
+                quarter_beat = true;
+            }
+            if e >= iv * 0.25 && (self.sub_fired & 0b0100) == 0 {
+                self.sub_fired |= 0b0100;
+                quarter_beat = true;
+            }
+            if e >= iv * 0.75 && (self.sub_fired & 0b1000) == 0 {
+                self.sub_fired |= 0b1000;
+                quarter_beat = true;
+            }
+        }
+
+        let bpm = 60.0 / self.interval as f32;
+        BeatState { beat, half_beat, quarter_beat, bpm, locked: self.locked }
+    }
 }

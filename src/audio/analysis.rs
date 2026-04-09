@@ -16,13 +16,13 @@ use std::sync::Arc;
 
 use super::state::N_BANDS;
 
-const N_FFT: usize = 256;
+const N_FFT: usize = 512;
 const PEAK_FLOOR: f32 = 0.001;
 const PEAK_DECAY: f32 = 0.9997;
 
 /// Number of low-frequency bands to sum for kick-energy detection. At
-/// 44.1 kHz with N_FFT=256 and the (i/N)^0.65 log mapping, bands [0..4]
-/// cover roughly sub-bass through low bass (~40–150 Hz) — the part of
+/// 44.1 kHz with N_FFT=512 and the (i/N)^0.65 log mapping, bands [0..4]
+/// cover roughly low-bass through low-mid (~86–430 Hz) — the part of
 /// the spectrum where kick transients live. Widening this range picks
 /// up too much bassline sustain; narrowing it misses un-compressed
 /// kicks.
@@ -51,9 +51,10 @@ pub struct AudioAnalyzer {
 }
 
 impl AudioAnalyzer {
-    pub fn new(_sample_rate: u32) -> Self {
+    pub fn new(sample_rate: u32) -> Self {
         let n_out = N_FFT / 2 + 1; // rfft output bins
-        let max_bin = (n_out as f32 * 14000.0 / 22050.0) as usize;
+        let nyquist = sample_rate as f32 * 0.5;
+        let max_bin = (n_out as f32 * 14000.0 / nyquist) as usize;
         let max_bin = max_bin.max(2).min(n_out);
         let mut planner = FftPlanner::new();
         let fft = planner.plan_fft_forward(N_FFT);

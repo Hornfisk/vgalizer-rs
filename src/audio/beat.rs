@@ -33,9 +33,17 @@ const COOLDOWN: f64 = 0.22;
 /// How many consecutive well-spaced beats we need before locking.
 const LOCK_WINDOW: usize = 8;
 /// Maximum stddev of inter-beat intervals (seconds) inside the lock
-/// window. ~10 ms is tight enough to reject drifting tempos but loose
-/// enough to tolerate the small jitter inherent to flux peak picking.
-const LOCK_STDDEV_MAX: f64 = 0.010;
+/// window. Previously 0.010 (10 ms), which was derived from theory
+/// without real-audio data. The T6a beat-dbg dump collected on pingo
+/// on 2026-04-08 showed `ri_stddev` ranging 32–382 ms (mean 111 ms) on
+/// real mixed music — the 10 ms threshold was unreachable by a factor
+/// of 3–40×, explaining 0 lock events across ~47 minutes of capture.
+/// 30 ms is the new ceiling: still tight enough that a steady 4/4 kick
+/// fits comfortably (the best observed moments touched ~32 ms, so a
+/// clean studio loop should dip below), but achievable on live mixed
+/// material. Expect pingo's next vjtest to actually log `beat: locked
+/// at X BPM` lines.
+const LOCK_STDDEV_MAX: f64 = 0.030;
 /// Miss this many predicted beats in a row and the lock drops.
 const UNLOCK_MISSES: u32 = 3;
 

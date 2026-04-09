@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-04-09 — T6a⁴–T6a⁶ PLL beat lock + HUD BPM lock indicator
+
+User-visible fix: the visible beat pulse now lands exactly on every
+kick and stops double-firing on subdivisions/hats during live DJ
+playback. Follows from T6a''' (`d9dded8`), which made lock *entry*
+reliable but left locked-mode behavior still driven by raw flux peaks.
+
+### Changed
+- **`src/audio/beat.rs` — T6a⁴ (PLL phase-locked beat maintenance).**
+  Once the tracker is locked, the visible beat fires from a predicted
+  grid (`last_beat + k*interval`) instead of from raw flux peaks.
+  Flux peaks in locked mode are used only to (a) gently nudge
+  `last_beat` via an EMA phase correction when they land within
+  tolerance of a predicted beat, and (b) drive a liveness check that
+  drops the lock if the flux stream disappears or can't phase-match.
+  Kills the "blinks on kicks AND on snares/hats" symptom: subdivision
+  transients can still nudge the phase but can't produce a visible
+  pulse. The pre-lock (unlocked) path is unchanged.
+- **`src/audio/beat.rs` — T6a⁵ / T6a⁶ liveness tuning.** Replaced the
+  rolling hit-rate liveness window from T6a⁴ (too strict for flux
+  detectors that only catch ~50% of real kicks on live mixed audio —
+  dropped locks every 2–4 s on clean passages) with two
+  timeout-based drop conditions: `LOCK_DROPOUT_TIMEOUT` (5.0 s of no
+  flux at all → music stopped) and `LOCK_PHASE_TIMEOUT` (5.0 s of
+  flux still arriving but none of it phase-matching → probable
+  subdivision mislock). Widened `PHASE_CORRECTION_TOL` 0.15 → 0.27
+  (fraction of `interval`) to absorb real-hardware flux timing
+  jitter while still rejecting subdivisions (which land at 0.5).
+  Dropped the `beat_hits: VecDeque<bool>` field and `UNLOCK_MISSES`
+  constant. Verified on Arch dev box against DJControl Inpulse 500
+  monitor source — locks hold through multi-minute continuous
+  stretches with `phase_err_ema` staying in the 4–13 ms range.
+- **HUD BPM lock indicator.** `BeatState` gained a `locked: bool`
+  field; the HUD now reads `BPM: 128*` when the tracker is locked on
+  a stable tempo and `BPM: ~128` while still tracking the pre-lock
+  seed estimate. Lets you tell at a glance whether the visible pulse
+  is grid-driven or still flux-driven without tailing the debug log.
+
 ## 2026-04-08 — T1–T6b debug + feature batch (from lazy-roaming-sky plan)
 
 Seven commits landed in one session covering two user-reported bugs

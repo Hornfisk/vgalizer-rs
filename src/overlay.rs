@@ -62,24 +62,34 @@ impl HudOverlay {
         &mut self,
         effect: &str,
         bpm: f32,
+        bpm_locked: bool,
         sensitivity: f32,
         level: f32,
         scene_dur: f64,
         stats_line: &str,
     ) {
         let bar = level_bar(level);
+        // BPM readout: "128*" when the tempo tracker is locked, "~128"
+        // while still tracking the pre-lock estimate. The star is ASCII
+        // so the bundled Roboto Condensed Bold renders it without
+        // falling back to a tofu glyph.
+        let bpm_str = if bpm_locked {
+            format!("{:.0}*", bpm)
+        } else {
+            format!("~{:.0}", bpm)
+        };
         // Three lines when stats are present: effect / stats / shortcuts.
         // The middle line is the T5 HUD extension — FPS, CPU%, temps,
         // RAM, GPU freq. Empty string skips the middle line entirely.
         let text = if stats_line.is_empty() {
             format!(
-                "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
-                effect, bpm, sensitivity, scene_dur, bar
+                "Effect: {}  BPM: {}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
+                effect, bpm_str, sensitivity, scene_dur, bar
             )
         } else {
             format!(
-                "Effect: {}  BPM: {:.0}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\n{}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
-                effect, bpm, sensitivity, scene_dur, bar, stats_line
+                "Effect: {}  BPM: {}  Sens: {:.1}  Auto: {:.0}s  Lvl: {}\n{}\nSPACE next  1-9 jump  ↑↓ sens  Shift+↑↓ auto  P mirror  A device  T name  E params  M effects  G global  V vje  H hide  Q quit",
+                effect, bpm_str, sensitivity, scene_dur, bar, stats_line
             )
         };
         // Skip the glyphon reshape if the string is byte-identical to the

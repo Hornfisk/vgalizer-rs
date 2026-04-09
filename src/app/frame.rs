@@ -274,6 +274,7 @@ pub(super) fn render_frame(state: &mut AppState) {
     state.hud.update_text(
         &effect_name,
         beat_state.bpm,
+        beat_state.locked,
         state.sensitivity,
         level,
         state.scene.scene_duration(),

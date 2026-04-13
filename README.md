@@ -4,6 +4,19 @@ Lightweight GPU-accelerated audio-reactive DJ visualizer, written in Rust.
 
 Designed for live use on a projector or screen behind the DJ booth — minimal dependencies, fast cold start, audio-reactive without setup, hot-reloadable config, standalone TUI param editor for live tweaking.
 
+## System requirements
+
+| | Minimum | Recommended |
+|---|---|---|
+| **OS** | Linux (Wayland or X11) | Arch / Debian, PipeWire |
+| **GPU** | Any iGPU with Vulkan support (Intel HD, AMD Vega) | Dedicated GPU (NVIDIA/AMD) |
+| **CPU** | Dual-core, any modern x86_64 | Quad-core+ |
+| **RAM** | 512 MB free | 1 GB+ |
+| **Audio** | Any ALSA/PulseAudio/PipeWire input | Line-in via PipeWire |
+| **Display** | 720p | 1080p+ (native output is full HD) |
+
+Runs at 60 FPS on integrated graphics. If it runs your desktop, it runs vgalizer.
+
 ## Install / update (one-liner)
 
 ```bash
